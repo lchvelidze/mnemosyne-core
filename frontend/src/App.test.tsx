@@ -1,0 +1,308 @@
+import "@testing-library/jest-dom/vitest";
+import { act, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import App from "./App";
+import { asPayloadText, cleanFinalAnswerForDisplay } from "./display";
+
+class MockEventSource {
+  static instances: MockEventSource[] = [];
+  listeners: Record<string, Array<(event: MessageEvent) => void>> = {};
+  url: string;
+
+  constructor(url: string) {
+    this.url = url;
+    MockEventSource.instances.push(this);
+  }
+
+  addEventListener(type: string, listener: (event: MessageEvent) => void) {
+    this.listeners[type] = [...(this.listeners[type] ?? []), listener];
+  }
+
+  close() {}
+
+  emit(type: string, data: unknown) {
+    for (const listener of this.listeners[type] ?? []) {
+      listener(new MessageEvent(type, { data: JSON.stringify(data) }));
+    }
+  }
+}
+
+describe("Run Console", () => {
+  beforeEach(() => {
+    MockEventSource.instances = [];
+    vi.stubGlobal("EventSource", MockEventSource);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/runs") && init?.method === "POST") {
+          const body = JSON.parse(String(init.body));
+          return Response.json({
+            id: "run-2",
+            status: "running",
+            goal: body.goal,
+            contract: {
+              goal: body.goal,
+              constraints: body.constraints,
+              allowed_tools: body.allowed_tools,
+              success_criteria: body.success_criteria,
+              expected_output: body.expected_output,
+            },
+          });
+        }
+        if (url.endsWith("/tools")) {
+          return Response.json([
+            {
+              name: "calculator",
+              description: "Evaluate deterministic arithmetic expressions.",
+              permission_category: "compute.safe",
+              input_schema: {},
+            },
+            {
+              name: "web_search",
+              description: "Search the public web.",
+              permission_category: "network.public_search",
+              input_schema: {},
+            },
+          ]);
+        }
+        if (url.endsWith("/memory") && init?.method === "POST") {
+          const body = JSON.parse(String(init.body));
+          return Response.json({
+            id: "mem-2",
+            text: body.text,
+            source: body.source,
+            tags: body.tags,
+            importance: body.importance,
+          });
+        }
+        if (url.endsWith("/memory")) {
+          return Response.json([
+            { id: "mem-1", text: "Solar battery research prefers LFP chemistry.", source: "seed" },
+          ]);
+        }
+        if (url.endsWith("/runs/run-1/retry")) {
+          return Response.json({ id: "run-3", status: "running", goal: "research battery safety" });
+        }
+        if (url.endsWith("/runs/run-1/cancel") || url.endsWith("/runs/run-3/cancel")) {
+          return Response.json({ id: "run-3", status: "cancelled", goal: "research battery safety" });
+        }
+        if (url.endsWith("/runs")) {
+          return Response.json([
+            {
+              id: "run-1",
+              goal: "research battery safety",
+              status: "completed",
+              created_at: "2026-05-08T12:00:00Z",
+              final_answer: "LFP batteries are a safety-oriented choice.",
+              contract: {
+                goal: "research battery safety",
+                constraints: "Use only safe tools.",
+                allowed_tools: ["calculator", "web_search"],
+                success_criteria: ["Answer the goal"],
+                expected_output: "Markdown answer",
+              },
+            },
+          ]);
+        }
+        if (url.endsWith("/runs/run-1") || url.endsWith("/runs/run-2") || url.endsWith("/runs/run-3")) {
+          return Response.json({
+            id: url.split("/").pop(),
+            goal: "research battery safety",
+            status: "completed",
+            created_at: "2026-05-08T12:00:00Z",
+            final_answer:
+              "## Battery Safety\n\n- [LFP batteries](https://example.com/lfp) are a safety-oriented choice.",
+            eval: { score: 0.86, passed: true, notes: "Grounded and inspectable." },
+            contract: {
+              goal: "research battery safety",
+              constraints: "Use only safe tools.",
+              allowed_tools: ["calculator", "web_search"],
+              success_criteria: ["Answer the goal"],
+              expected_output: "Markdown answer",
+            },
+          });
+        }
+        if (
+          url.endsWith("/runs/run-1/events.json") ||
+          url.endsWith("/runs/run-2/events.json") ||
+          url.endsWith("/runs/run-3/events.json")
+        ) {
+          return Response.json([
+            {
+              id: "evt-1",
+              sequence: 1,
+              event_type: "run.created",
+              payload: { goal: "research battery safety", status: "running" },
+              created_at: "2026-05-08T12:00:00Z",
+            },
+            {
+              id: "evt-2",
+              sequence: 2,
+              event_type: "plan.created",
+              payload: { steps: ["Review the run contract"], allowed_tools: ["calculator", "web_search"] },
+              created_at: "2026-05-08T12:00:01Z",
+            },
+            {
+              id: "evt-3",
+              sequence: 3,
+              event_type: "memory.retrieved",
+              payload: { records: [{ id: "mem-1", text: "Solar battery research prefers LFP chemistry." }] },
+              created_at: "2026-05-08T12:00:02Z",
+            },
+            {
+              id: "evt-4",
+              sequence: 4,
+              event_type: "tool.completed",
+              payload: { tool_name: "web_search", result: { results: [{ title: "LFP safety" }] } },
+              created_at: "2026-05-08T12:00:03Z",
+            },
+          ]);
+        }
+        if (
+          url.endsWith("/runs/run-1/memory") ||
+          url.endsWith("/runs/run-2/memory") ||
+          url.endsWith("/runs/run-3/memory")
+        ) {
+          return Response.json([
+            { id: "mem-1", text: "Solar battery research prefers LFP chemistry.", source: "seed" },
+          ]);
+        }
+        return Response.json({});
+      }),
+    );
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("creates a run and renders timeline events, memory, answer, and eval", async () => {
+    render(<App />);
+
+    await userEvent.type(screen.getByLabelText(/research goal/i), "research battery safety");
+    await userEvent.click(screen.getByRole("button", { name: /start run/i }));
+
+    await waitFor(() => expect(MockEventSource.instances).toHaveLength(1));
+    await waitFor(() => expect(MockEventSource.instances[0].listeners["run.completed"]).toHaveLength(1));
+    act(() => {
+      MockEventSource.instances[0].emit("memory.retrieved", {
+        records: [{ id: "mem-1", text: "Solar battery research prefers LFP chemistry." }],
+      });
+      MockEventSource.instances[0].emit("tool.completed", {
+        tool_name: "calculator",
+        result: { result: 4 },
+      });
+    });
+
+    expect(await screen.findByText("memory.retrieved")).toBeInTheDocument();
+    expect(screen.getByText("tool.completed")).toBeInTheDocument();
+
+    act(() => {
+      MockEventSource.instances[0].emit("run.completed", {
+        final_answer:
+          "## Battery Safety\n\n- [LFP batteries](https://example.com/lfp) are a safety-oriented choice.",
+      });
+    });
+
+    expect(await screen.findByRole("heading", { name: "Battery Safety" })).toBeInTheDocument();
+    expect(await screen.findByRole("link", { name: /LFP batteries/i })).toHaveAttribute(
+      "href",
+      "https://example.com/lfp",
+    );
+    expect((await screen.findAllByText(/Solar battery research prefers LFP chemistry/i))[0]).toBeInTheDocument();
+    expect(await screen.findByText(/Grounded and inspectable/i)).toBeInTheDocument();
+  });
+
+  it("can reopen a previous run from history", async () => {
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /research battery safety/i }));
+
+    expect(await screen.findByRole("heading", { name: "Battery Safety" })).toBeInTheDocument();
+    expect(await screen.findByText("tool.completed")).toBeInTheDocument();
+    expect(await screen.findByText(/Grounded and inspectable/i)).toBeInTheDocument();
+  });
+
+  it("loads the latest run details on startup", async () => {
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Battery Safety" })).toBeInTheDocument();
+    expect(await screen.findByText("plan.created")).toBeInTheDocument();
+    expect(await screen.findByText(/Use only safe tools/i)).toBeInTheDocument();
+    expect(await screen.findByText("tool.completed")).toBeInTheDocument();
+    expect(await screen.findByText(/Grounded and inspectable/i)).toBeInTheDocument();
+  });
+
+  it("submits selected tool permissions and adds memory records", async () => {
+    const fetchMock = vi.mocked(fetch);
+    render(<App />);
+
+    await userEvent.click(await screen.findByLabelText(/web_search/i));
+    await userEvent.type(screen.getByLabelText(/research goal/i), "research battery safety");
+    await userEvent.click(screen.getByRole("button", { name: /start run/i }));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringContaining("/runs"),
+        expect.objectContaining({
+          method: "POST",
+          body: expect.stringContaining('"allowed_tools":["calculator"]'),
+        }),
+      ),
+    );
+
+    await userEvent.type(screen.getByLabelText(/new memory/i), "Thermal runaway notes");
+    await userEvent.click(screen.getByRole("button", { name: /add memory/i }));
+
+    expect(await screen.findByText(/Thermal runaway notes/i)).toBeInTheDocument();
+  });
+
+  it("supports duplicate, retry, and cancel run controls", async () => {
+    const fetchMock = vi.mocked(fetch);
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /duplicate/i }));
+    expect(screen.getByLabelText(/research goal/i)).toHaveValue("research battery safety");
+
+    await userEvent.click(screen.getByRole("button", { name: /retry/i }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("/runs/run-1/retry"), expect.anything()));
+
+    await userEvent.click(screen.getByRole("button", { name: /cancel/i }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("/runs/run-3/cancel"), expect.anything()));
+  });
+
+  it("cleans stale tool-call markup from final answer display text", () => {
+    const cleaned = cleanFinalAnswerForDisplay(`
+<tool_call tool_name="write_text_file">
+  <arg name="path">/mnt/f/myagent_data.md</arg>
+  <arg name="text"># Hidden File Body</arg>
+</tool_call>
+
+Created the benchmark summary file here:
+
+\`/mnt/f/myagent_data.md\`
+`);
+
+    expect(cleaned).not.toContain("<tool_call");
+    expect(cleaned).not.toContain("Hidden File Body");
+    expect(cleaned).toContain("Created the benchmark summary file here");
+  });
+
+  it("redacts synthesis message payloads from timeline JSON", () => {
+    expect(
+      asPayloadText("model.synthesis_completed", {
+        message: "<tool_call tool_name=\"write_text_file\">large payload</tool_call>",
+      }),
+    ).toBe(
+      JSON.stringify(
+        {
+          message: "[shown in Final Answer]",
+        },
+        null,
+        2,
+      ),
+    );
+  });
+});
