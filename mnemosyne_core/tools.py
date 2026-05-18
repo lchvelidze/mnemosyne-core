@@ -165,6 +165,16 @@ class ToolRegistry:
                             },
                             "working_directory": {"type": "string"},
                             "command": {"type": "string"},
+                            "shell_mode": {
+                                "type": "string",
+                                "enum": ["login", "interactive", "login_interactive"],
+                                "default": settings.wsl_shell_mode,
+                                "description": (
+                                    "WSL bash startup mode. Interactive mode loads "
+                                    "~/.bashrc so user-local tools such as openclaw "
+                                    "are available."
+                                ),
+                            },
                             "timeout_seconds": {
                                 "type": "number",
                                 "minimum": 1,
@@ -232,6 +242,16 @@ class ToolRegistry:
                             "distro": {
                                 "type": "string",
                                 "default": settings.wsl_distro,
+                            },
+                            "shell_mode": {
+                                "type": "string",
+                                "enum": ["login", "interactive", "login_interactive"],
+                                "default": settings.wsl_shell_mode,
+                                "description": (
+                                    "WSL bash startup mode. Interactive mode loads "
+                                    "~/.bashrc so user-local tools such as openclaw "
+                                    "are available."
+                                ),
                             },
                             "timeout_seconds": {
                                 "type": "number",
@@ -343,6 +363,7 @@ class TerminalTool:
         self.wsl_allowed_roots = [
             _normalize_wsl_root(root) for root in settings.wsl_allowed_roots
         ]
+        self.wsl_shell_mode = _normalize_wsl_shell_mode(settings.wsl_shell_mode)
 
     def allowed_wsl_roots_description(self) -> str:
         return ", ".join(self.wsl_allowed_roots) if self.wsl_allowed_roots else "none"
@@ -379,6 +400,9 @@ class TerminalTool:
             resolved_cwd = str(cwd)
         elif normalized_shell == "wsl":
             cwd = self._allowed_wsl_cwd(working_directory)
+            shell_mode = _normalize_wsl_shell_mode(
+                arguments.get("shell_mode", self.wsl_shell_mode)
+            )
             completed = self._run(
                 [
                     "wsl.exe",
@@ -388,7 +412,7 @@ class TerminalTool:
                     cwd,
                     "--",
                     "bash",
-                    "-lc",
+                    _wsl_bash_flag(shell_mode),
                     command,
                 ],
                 cwd=None,
@@ -404,6 +428,7 @@ class TerminalTool:
             "shell": normalized_shell,
             "command": command,
             "working_directory": resolved_cwd,
+            "shell_mode": shell_mode if normalized_shell == "wsl" else None,
             "exit_code": completed.returncode,
             "stdout": stdout,
             "stderr": stderr,
@@ -653,6 +678,7 @@ class ElevatedWslTool:
         self.wsl_allowed_roots = [
             _normalize_wsl_root(root) for root in settings.wsl_allowed_roots
         ]
+        self.wsl_shell_mode = _normalize_wsl_shell_mode(settings.wsl_shell_mode)
         self.default_timeout_seconds = settings.elevated_wsl_timeout_seconds
         self.max_output_bytes = settings.terminal_max_output_bytes
         self.log_dir = self._allowed_windows_path(
@@ -672,6 +698,9 @@ class ElevatedWslTool:
         distro = arguments.get("distro", self.wsl_distro)
         if not isinstance(distro, str) or not distro.strip():
             raise ToolExecutionError("A non-empty distro is required")
+        shell_mode = _normalize_wsl_shell_mode(
+            arguments.get("shell_mode", self.wsl_shell_mode)
+        )
         _block_dangerous_command(command, "wsl")
         timeout_seconds = self._timeout(arguments.get("timeout_seconds"))
         self.log_dir.mkdir(parents=True, exist_ok=True)
@@ -685,6 +714,7 @@ class ElevatedWslTool:
                 distro=distro,
                 working_directory=working_directory,
                 command=command,
+                shell_mode=shell_mode,
                 stdout_log=stdout_log,
                 stderr_log=stderr_log,
                 exit_code_log=exit_code_log,
@@ -737,6 +767,7 @@ class ElevatedWslTool:
             "distro": distro,
             "working_directory": working_directory,
             "command": command,
+            "shell_mode": shell_mode,
             "wrapper_path": str(wrapper_path),
             "stdout_log": str(stdout_log),
             "stderr_log": str(stderr_log),
@@ -799,6 +830,7 @@ class ElevatedWslTool:
         distro: str,
         working_directory: str,
         command: str,
+        shell_mode: str,
         stdout_log: Path,
         stderr_log: Path,
         exit_code_log: Path,
@@ -811,7 +843,7 @@ class ElevatedWslTool:
                 working_directory,
                 "--",
                 "bash",
-                "-lc",
+                _wsl_bash_flag(shell_mode),
                 command,
             ]
         )
@@ -840,6 +872,40 @@ class ElevatedWslTool:
 def _normalize_wsl_root(raw_path: str) -> str:
     normalized = raw_path.replace("\\", "/")
     return posixpath.normpath(normalized if normalized.startswith("/") else f"/{normalized}")
+
+
+def _normalize_wsl_shell_mode(raw_mode: Any) -> str:
+    if raw_mode is None:
+        return "interactive"
+    if not isinstance(raw_mode, str) or not raw_mode.strip():
+        raise ToolExecutionError("WSL shell_mode must be a non-empty string")
+    normalized = raw_mode.strip().lower().replace("-", "_")
+    aliases = {
+        "login": "login",
+        "noninteractive": "login",
+        "non_interactive": "login",
+        "interactive": "interactive",
+        "login_interactive": "login_interactive",
+        "interactive_login": "login_interactive",
+    }
+    try:
+        return aliases[normalized]
+    except KeyError as exc:
+        raise ToolExecutionError(
+            "WSL shell_mode must be one of: login, interactive, login_interactive"
+        ) from exc
+
+
+def _wsl_bash_flag(shell_mode: str) -> str:
+    if shell_mode == "login":
+        return "-lc"
+    if shell_mode == "interactive":
+        return "-ic"
+    if shell_mode == "login_interactive":
+        return "-lic"
+    raise ToolExecutionError(
+        "WSL shell_mode must be one of: login, interactive, login_interactive"
+    )
 
 
 def _block_dangerous_command(command: str, shell: str) -> None:

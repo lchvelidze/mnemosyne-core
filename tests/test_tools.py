@@ -275,11 +275,47 @@ def test_terminal_tool_runs_wsl_with_configured_distro(
         "/mnt/f",
         "--",
         "bash",
-        "-lc",
+        "-ic",
         "pwd",
     ]
     assert captured["kwargs"]["cwd"] is None
     assert result["stdout"] == "/mnt/f\n"
+    assert result["shell_mode"] == "interactive"
+
+
+def test_terminal_tool_allows_login_wsl_shell_mode(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    captured: dict = {}
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("mnemosyne_core.tools.subprocess.run", fake_run)
+    registry = ToolRegistry.safe_defaults(
+        Settings(
+            database_path=str(tmp_path / "mnemosyne.db"),
+            allowed_file_roots=[str(tmp_path)],
+            terminal_enabled=True,
+            terminal_shells=["wsl"],
+            wsl_distro="Ubuntu",
+            wsl_allowed_roots=["/mnt/f"],
+        )
+    )
+
+    result = registry.execute(
+        "run_terminal_command",
+        {
+            "shell": "wsl",
+            "working_directory": "/mnt/f",
+            "command": "pwd",
+            "shell_mode": "login",
+        },
+    )
+
+    assert captured["command"][7] == "-lc"
+    assert result["shell_mode"] == "login"
 
 
 def test_elevated_powershell_blocks_script_outside_allowed_roots(
@@ -473,6 +509,7 @@ def test_elevated_wsl_builds_uac_launch_and_wrapper(
     assert "wsl.exe" in wrapper_text
     assert "Ubuntu" in wrapper_text
     assert "/mnt/f/projects" in wrapper_text
+    assert "-ic" in wrapper_text
     assert "touch hello.txt && pwd" in wrapper_text
 
 

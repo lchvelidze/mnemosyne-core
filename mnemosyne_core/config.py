@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     elevated_wsl_log_dir: str = "data/elevated-wsl"
     wsl_distro: str = "Ubuntu"
     wsl_allowed_roots: list[str] = Field(default_factory=list)
+    wsl_shell_mode: str = "interactive"
 
     @property
     def model_configured(self) -> bool:
