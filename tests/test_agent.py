@@ -7,8 +7,8 @@ from mnemosyne_core.config import Settings
 from mnemosyne_core.db import Database
 from mnemosyne_core.memory import MemoryStore
 from mnemosyne_core.model_client import ModelRequest, ModelResponse, ToolCallRequest
-from mnemosyne_core.models import TaskContract
-from mnemosyne_core.tools import ToolRegistry
+from mnemosyne_core.models import TaskContract, ToolSpec
+from mnemosyne_core.tools import ToolExecutionError, ToolRegistry
 
 
 class StubModelClient:
@@ -89,6 +89,27 @@ class LateWriteSynthesisModelClient:
                 ],
             )
         return ModelResponse(message="Created the benchmark report from executed tool results.")
+
+
+class FailedToolSynthesisModelClient:
+    configured = True
+
+    async def complete(self, request: ModelRequest) -> ModelResponse:
+        if request.tool_results:
+            failed = request.tool_results[0]
+            assert failed["tool_name"] == "slow_tool"
+            assert failed["status"] == "failed"
+            assert "timed out" in failed["error"]
+            return ModelResponse(
+                message=(
+                    "The command did not finish because the terminal tool timed out. "
+                    "Retry with a larger timeout."
+                )
+            )
+        return ModelResponse(
+            message="",
+            tool_calls=[ToolCallRequest(name="slow_tool", arguments={"command": "run"})],
+        )
 
 
 @pytest.mark.asyncio()
@@ -208,6 +229,37 @@ async def test_agent_executes_tool_calls_requested_during_synthesis(tmp_path: Pa
     assert completed_tools == ["web_search", "write_text_file"]
     assert target.read_text(encoding="utf-8") == "# Benchmark Report\n\nWritten after research."
     assert run.final_answer == "Created the benchmark report from executed tool results."
+
+
+@pytest.mark.asyncio()
+async def test_agent_synthesizes_answer_after_tool_failure(tmp_path: Path) -> None:
+    db = Database(tmp_path / "mnemosyne.db")
+    db.initialize()
+    memory = MemoryStore(db)
+    registry = ToolRegistry()
+    registry.register(
+        ToolSpec(
+            name="slow_tool",
+            description="Always times out.",
+            input_schema={"type": "object", "properties": {"command": {"type": "string"}}},
+            permission_category="terminal.modify",
+        ),
+        lambda _arguments: (_ for _ in ()).throw(
+            ToolExecutionError("Terminal command timed out after 30s")
+        ),
+    )
+    runtime = AgentRuntime(db, memory, registry, FailedToolSynthesisModelClient())
+
+    run = await runtime.run_goal("run slow command")
+
+    event_types = [event.event_type for event in db.list_events(run.id)]
+    assert run.status == "completed"
+    assert "tool.failed" in event_types
+    assert "model.synthesis_started" in event_types
+    assert run.final_answer == (
+        "The command did not finish because the terminal tool timed out. "
+        "Retry with a larger timeout."
+    )
 
 
 @pytest.mark.asyncio()

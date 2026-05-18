@@ -211,6 +211,7 @@ class AgentRuntime:
                     {
                         "tool_name": tool_call.name,
                         "arguments": tool_call.arguments,
+                        "status": "completed",
                         "result": result,
                     }
                 )
@@ -234,6 +235,14 @@ class AgentRuntime:
                 )
             except ToolExecutionError as exc:
                 duration_ms = int((perf_counter() - started) * 1000)
+                tool_results.append(
+                    {
+                        "tool_name": tool_call.name,
+                        "arguments": tool_call.arguments,
+                        "status": "failed",
+                        "error": str(exc),
+                    }
+                )
                 self.db.record_tool_call(
                     run_id=run_id,
                     tool_name=tool_call.name,
