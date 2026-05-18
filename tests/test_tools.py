@@ -21,6 +21,8 @@ def registry(tmp_path: Path) -> ToolRegistry:
             terminal_max_output_bytes=2048,
             elevated_powershell_enabled=True,
             elevated_powershell_log_dir=str(allowed / ".mnemosyne-elevated"),
+            elevated_wsl_enabled=True,
+            elevated_wsl_log_dir=str(allowed / ".mnemosyne-elevated-wsl"),
             wsl_allowed_roots=["/mnt/f"],
             http_timeout_seconds=1.0,
             http_max_bytes=2048,
@@ -141,6 +143,18 @@ def test_registry_includes_elevated_powershell_tool_when_enabled(
     assert elevated.permission_category == "terminal.elevated"
     assert elevated.input_schema["required"] == ["script_path", "working_directory"]
     assert "arguments" in elevated.input_schema["properties"]
+
+
+def test_registry_includes_elevated_wsl_tool_when_enabled(
+    registry: ToolRegistry,
+) -> None:
+    elevated = next(
+        spec for spec in registry.specs() if spec.name == "run_elevated_wsl_command"
+    )
+
+    assert elevated.permission_category == "terminal.elevated"
+    assert elevated.input_schema["required"] == ["working_directory", "command"]
+    assert elevated.input_schema["properties"]["distro"]["default"] == "Ubuntu"
 
 
 def test_file_tool_specs_expose_allowed_roots(registry: ToolRegistry, tmp_path: Path) -> None:
@@ -362,6 +376,89 @@ def test_elevated_powershell_builds_uac_launch_and_wrapper(
     wrapper_text = Path(result["wrapper_path"]).read_text(encoding="utf-8")
     assert str(script.resolve()) in wrapper_text
     assert "https://example.com/?q=a b" in wrapper_text
+
+
+def test_elevated_wsl_blocks_working_directory_outside_allowed_wsl_roots(
+    registry: ToolRegistry,
+) -> None:
+    with pytest.raises(ToolExecutionError, match="outside allowed WSL roots"):
+        registry.execute(
+            "run_elevated_wsl_command",
+            {"working_directory": "/etc", "command": "pwd"},
+        )
+
+
+def test_elevated_wsl_blocks_dangerous_commands(registry: ToolRegistry) -> None:
+    with pytest.raises(ToolExecutionError, match="blocked"):
+        registry.execute(
+            "run_elevated_wsl_command",
+            {"working_directory": "/mnt/f", "command": "sudo rm -rf /"},
+        )
+
+
+def test_elevated_wsl_requires_configured_roots(tmp_path: Path) -> None:
+    registry = ToolRegistry.safe_defaults(
+        Settings(
+            database_path=str(tmp_path / "mnemosyne.db"),
+            allowed_file_roots=[str(tmp_path)],
+            elevated_wsl_enabled=True,
+            elevated_wsl_log_dir=str(tmp_path / "logs"),
+            wsl_allowed_roots=[],
+        )
+    )
+
+    with pytest.raises(ToolExecutionError, match="No WSL roots"):
+        registry.execute(
+            "run_elevated_wsl_command",
+            {"working_directory": "/mnt/f", "command": "pwd"},
+        )
+
+
+def test_elevated_wsl_builds_uac_launch_and_wrapper(
+    monkeypatch: pytest.MonkeyPatch, registry: ToolRegistry, tmp_path: Path
+) -> None:
+    captured: dict = {}
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        return subprocess.CompletedProcess(command, 0, stdout="started", stderr="")
+
+    monkeypatch.setattr("mnemosyne_core.tools.subprocess.run", fake_run)
+
+    result = registry.execute(
+        "run_elevated_wsl_command",
+        {
+            "working_directory": "/mnt/f/projects",
+            "command": "touch hello.txt && pwd",
+            "timeout_seconds": 10,
+        },
+    )
+
+    assert captured["command"][:5] == [
+        "powershell.exe",
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+    ]
+    launch_script = captured["command"][-1]
+    assert "Start-Process" in launch_script
+    assert "-Verb RunAs" in launch_script
+    assert result["risk"] == "requires_admin_approval"
+    assert result["uac_started"] is True
+    assert result["distro"] == "Ubuntu"
+    assert result["working_directory"] == "/mnt/f/projects"
+    assert result["command"] == "touch hello.txt && pwd"
+    assert Path(result["wrapper_path"]).is_file()
+    assert Path(result["stdout_log"]).parent == Path(result["wrapper_path"]).parent
+    assert Path(result["stderr_log"]).parent == Path(result["wrapper_path"]).parent
+    assert Path(result["exit_code_log"]).parent == Path(result["wrapper_path"]).parent
+    wrapper_text = Path(result["wrapper_path"]).read_text(encoding="utf-8")
+    assert "wsl.exe" in wrapper_text
+    assert "Ubuntu" in wrapper_text
+    assert "/mnt/f/projects" in wrapper_text
+    assert "touch hello.txt && pwd" in wrapper_text
 
 
 def test_web_search_parses_result_titles_urls_and_snippets() -> None:

@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     elevated_powershell_enabled: bool = False
     elevated_powershell_timeout_seconds: float = 60.0
     elevated_powershell_log_dir: str = "data/elevated"
+    elevated_wsl_enabled: bool = False
+    elevated_wsl_timeout_seconds: float = 60.0
+    elevated_wsl_log_dir: str = "data/elevated-wsl"
     wsl_distro: str = "Ubuntu"
     wsl_allowed_roots: list[str] = Field(default_factory=list)
 

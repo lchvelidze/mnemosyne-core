@@ -212,6 +212,39 @@ class ToolRegistry:
                 ),
                 elevated_powershell_tool.execute,
             )
+        if settings.elevated_wsl_enabled:
+            elevated_wsl_tool = ElevatedWslTool(settings)
+            registry.register(
+                ToolSpec(
+                    name="run_elevated_wsl_command",
+                    description=(
+                        "Launch a WSL command through a Windows UAC elevation prompt. "
+                        f"Working directories must be under allowed WSL roots: "
+                        f"{elevated_wsl_tool.allowed_wsl_roots_description()}. "
+                        f"Logs must stay under allowed Windows roots: {allowed_roots_description}."
+                    ),
+                    input_schema={
+                        "type": "object",
+                        "required": ["working_directory", "command"],
+                        "properties": {
+                            "working_directory": {"type": "string"},
+                            "command": {"type": "string"},
+                            "distro": {
+                                "type": "string",
+                                "default": settings.wsl_distro,
+                            },
+                            "timeout_seconds": {
+                                "type": "number",
+                                "minimum": 1,
+                                "maximum": settings.elevated_wsl_timeout_seconds,
+                                "default": settings.elevated_wsl_timeout_seconds,
+                            },
+                        },
+                    },
+                    permission_category="terminal.elevated",
+                ),
+                elevated_wsl_tool.execute,
+            )
         return registry
 
     def register(self, spec: ToolSpec, handler: ToolHandler) -> None:
@@ -326,7 +359,7 @@ class TerminalTool:
             raise ToolExecutionError("A non-empty working_directory is required")
         timeout_seconds = self._timeout(arguments.get("timeout_seconds"))
         normalized_shell = shell.lower()
-        self._block_dangerous_command(command, normalized_shell)
+        _block_dangerous_command(command, normalized_shell)
         started = perf_counter()
         if normalized_shell == "powershell":
             cwd = self._allowed_windows_cwd(working_directory)
@@ -409,36 +442,6 @@ class TerminalTool:
         if not allowed:
             raise ToolExecutionError(f"Working directory is outside allowed WSL roots: {cwd}")
         return cwd
-
-    def _block_dangerous_command(self, command: str, shell: str) -> None:
-        normalized = " ".join(command.lower().split())
-        blocked_patterns = [
-            r"\bgit\s+reset\s+--hard\b",
-            r"\bgit\s+clean\s+-[^\s]*f",
-            r"\bformat\b",
-            r"\bdiskpart\b",
-            r"\bbcdedit\b",
-            r"\bshutdown\b",
-            r"\brestart-computer\b",
-            r"\bstop-computer\b",
-            r"\bsudo\b",
-            r"\bsu\s+-",
-            r"\bchmod\s+-r\s+777\s+/",
-            r"\bchown\s+-r\b",
-            r"\brm\s+-[^\n;|&]*r[^\n;|&]*\s+/",
-            r"\bremove-item\b[^\n;|&]*-recurse\b[^\n;|&]*(c:\\|f:\\|/)",
-        ]
-        if shell == "wsl":
-            blocked_patterns.extend(
-                [
-                    r"\bdd\s+.*\bof=/dev/",
-                    r"\bmkfs\b",
-                    r"\bmount\b",
-                    r"\bumount\b",
-                ]
-            )
-        if any(re.search(pattern, normalized) for pattern in blocked_patterns):
-            raise ToolExecutionError("Terminal command is blocked by safety policy")
 
     @staticmethod
     def _run(
@@ -641,9 +644,224 @@ class ElevatedPowerShellTool:
         )
 
 
+class ElevatedWslTool:
+    def __init__(self, settings: Settings) -> None:
+        self.allowed_windows_roots = [
+            Path(root).resolve() for root in settings.allowed_file_roots
+        ]
+        self.wsl_distro = settings.wsl_distro
+        self.wsl_allowed_roots = [
+            _normalize_wsl_root(root) for root in settings.wsl_allowed_roots
+        ]
+        self.default_timeout_seconds = settings.elevated_wsl_timeout_seconds
+        self.log_dir = self._allowed_windows_path(
+            settings.elevated_wsl_log_dir,
+            label="Log directory",
+            must_exist=False,
+        )
+
+    def allowed_wsl_roots_description(self) -> str:
+        return ", ".join(self.wsl_allowed_roots) if self.wsl_allowed_roots else "none"
+
+    def execute(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        command = arguments.get("command")
+        if not isinstance(command, str) or not command.strip():
+            raise ToolExecutionError("A non-empty command is required")
+        working_directory = self._allowed_wsl_cwd(arguments.get("working_directory"))
+        distro = arguments.get("distro", self.wsl_distro)
+        if not isinstance(distro, str) or not distro.strip():
+            raise ToolExecutionError("A non-empty distro is required")
+        _block_dangerous_command(command, "wsl")
+        timeout_seconds = self._timeout(arguments.get("timeout_seconds"))
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+        invocation_id = uuid.uuid4().hex
+        wrapper_path = self.log_dir / f"elevated-wsl-{invocation_id}.ps1"
+        stdout_log = self.log_dir / f"elevated-wsl-{invocation_id}.stdout.log"
+        stderr_log = self.log_dir / f"elevated-wsl-{invocation_id}.stderr.log"
+        exit_code_log = self.log_dir / f"elevated-wsl-{invocation_id}.exitcode.txt"
+        wrapper_path.write_text(
+            self._wrapper_script(
+                distro=distro,
+                working_directory=working_directory,
+                command=command,
+                stdout_log=stdout_log,
+                stderr_log=stderr_log,
+                exit_code_log=exit_code_log,
+            ),
+            encoding="utf-8",
+            newline="\n",
+        )
+        launcher_arguments = _ps_array(
+            ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(wrapper_path)]
+        )
+        launch_command = [
+            "powershell.exe",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            (
+                "Start-Process powershell.exe "
+                f"-Verb RunAs -WorkingDirectory {_ps_quote(str(self.log_dir))} "
+                f"-ArgumentList {launcher_arguments}"
+            ),
+        ]
+        started = perf_counter()
+        try:
+            completed = subprocess.run(
+                launch_command,
+                cwd=str(self.log_dir),
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout_seconds,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            message = f"Elevated WSL launch timed out after {timeout_seconds:g}s"
+            raise ToolExecutionError(message) from exc
+        except OSError as exc:
+            raise ToolExecutionError(f"Elevated WSL launch failed to start: {exc}") from exc
+        duration_ms = int((perf_counter() - started) * 1000)
+        return {
+            "distro": distro,
+            "working_directory": working_directory,
+            "command": command,
+            "wrapper_path": str(wrapper_path),
+            "stdout_log": str(stdout_log),
+            "stderr_log": str(stderr_log),
+            "exit_code_log": str(exit_code_log),
+            "uac_started": completed.returncode == 0,
+            "launcher_exit_code": completed.returncode,
+            "launcher_stdout": completed.stdout,
+            "launcher_stderr": completed.stderr,
+            "duration_ms": duration_ms,
+            "risk": "requires_admin_approval",
+        }
+
+    def _allowed_windows_path(
+        self,
+        raw_path: Any,
+        *,
+        label: str,
+        must_exist: bool = True,
+    ) -> Path:
+        if not isinstance(raw_path, str) or not raw_path.strip():
+            raise ToolExecutionError(f"{label} path is required")
+        path = _normalize_local_path(raw_path)
+        if not path.is_absolute():
+            path = self.allowed_windows_roots[0] / path
+        path = path.resolve()
+        if not any(path == root or root in path.parents for root in self.allowed_windows_roots):
+            raise ToolExecutionError(f"{label} is outside allowed roots: {path}")
+        if must_exist and not path.exists():
+            raise ToolExecutionError(f"{label} does not exist: {path}")
+        return path
+
+    def _allowed_wsl_cwd(self, raw_path: Any) -> str:
+        if not isinstance(raw_path, str) or not raw_path.strip():
+            raise ToolExecutionError("A non-empty working_directory is required")
+        cwd = _normalize_wsl_root(raw_path)
+        if not self.wsl_allowed_roots:
+            raise ToolExecutionError("No WSL roots are configured")
+        allowed = any(
+            cwd == root or cwd.startswith(f"{root.rstrip('/')}/")
+            for root in self.wsl_allowed_roots
+        )
+        if not allowed:
+            raise ToolExecutionError(f"Working directory is outside allowed WSL roots: {cwd}")
+        return cwd
+
+    def _timeout(self, raw_timeout: Any) -> float:
+        if raw_timeout is None:
+            return self.default_timeout_seconds
+        if not isinstance(raw_timeout, int | float):
+            raise ToolExecutionError("timeout_seconds must be a number")
+        timeout = float(raw_timeout)
+        if timeout <= 0:
+            raise ToolExecutionError("timeout_seconds must be positive")
+        return min(timeout, self.default_timeout_seconds)
+
+    @staticmethod
+    def _wrapper_script(
+        *,
+        distro: str,
+        working_directory: str,
+        command: str,
+        stdout_log: Path,
+        stderr_log: Path,
+        exit_code_log: Path,
+    ) -> str:
+        wsl_args = _ps_array(
+            [
+                "-d",
+                distro,
+                "--cd",
+                working_directory,
+                "--",
+                "bash",
+                "-lc",
+                command,
+            ]
+        )
+        return "\n".join(
+            [
+                "$ErrorActionPreference = 'Stop'",
+                f"$stdoutLog = {_ps_quote(str(stdout_log))}",
+                f"$stderrLog = {_ps_quote(str(stderr_log))}",
+                f"$exitCodeLog = {_ps_quote(str(exit_code_log))}",
+                f"$wslArgs = {wsl_args}",
+                "try {",
+                "  & wsl.exe @wslArgs 1> $stdoutLog 2> $stderrLog",
+                "  $code = $LASTEXITCODE",
+                "  if ($null -eq $code) { $code = 0 }",
+                "} catch {",
+                "  $_ | Out-String | Set-Content -LiteralPath $stderrLog -Encoding UTF8",
+                "  $code = 1",
+                "}",
+                "$code | Set-Content -LiteralPath $exitCodeLog -Encoding UTF8",
+                "exit $code",
+                "",
+            ]
+        )
+
+
 def _normalize_wsl_root(raw_path: str) -> str:
     normalized = raw_path.replace("\\", "/")
     return posixpath.normpath(normalized if normalized.startswith("/") else f"/{normalized}")
+
+
+def _block_dangerous_command(command: str, shell: str) -> None:
+    normalized = " ".join(command.lower().split())
+    blocked_patterns = [
+        r"\bgit\s+reset\s+--hard\b",
+        r"\bgit\s+clean\s+-[^\s]*f",
+        r"\bformat\b",
+        r"\bdiskpart\b",
+        r"\bbcdedit\b",
+        r"\bshutdown\b",
+        r"\brestart-computer\b",
+        r"\bstop-computer\b",
+        r"\bsudo\b",
+        r"\bsu\s+-",
+        r"\bchmod\s+-r\s+777\s+/",
+        r"\bchown\s+-r\b",
+        r"\brm\s+-[^\n;|&]*r[^\n;|&]*\s+/",
+        r"\bremove-item\b[^\n;|&]*-recurse\b[^\n;|&]*(c:\\|f:\\|/)",
+    ]
+    if shell == "wsl":
+        blocked_patterns.extend(
+            [
+                r"\bdd\s+.*\bof=/dev/",
+                r"\bmkfs\b",
+                r"\bmount\b",
+                r"\bumount\b",
+            ]
+        )
+    if any(re.search(pattern, normalized) for pattern in blocked_patterns):
+        raise ToolExecutionError("Terminal command is blocked by safety policy")
 
 
 def _ps_quote(value: str) -> str:
