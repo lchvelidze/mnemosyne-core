@@ -12,7 +12,7 @@ import uuid
 from collections.abc import Callable
 from html.parser import HTMLParser
 from pathlib import Path
-from time import perf_counter
+from time import perf_counter, sleep
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
@@ -654,6 +654,7 @@ class ElevatedWslTool:
             _normalize_wsl_root(root) for root in settings.wsl_allowed_roots
         ]
         self.default_timeout_seconds = settings.elevated_wsl_timeout_seconds
+        self.max_output_bytes = settings.terminal_max_output_bytes
         self.log_dir = self._allowed_windows_path(
             settings.elevated_wsl_log_dir,
             label="Log directory",
@@ -724,6 +725,13 @@ class ElevatedWslTool:
             raise ToolExecutionError(message) from exc
         except OSError as exc:
             raise ToolExecutionError(f"Elevated WSL launch failed to start: {exc}") from exc
+        log_result = _collect_elevated_log_result(
+            stdout_log=stdout_log,
+            stderr_log=stderr_log,
+            exit_code_log=exit_code_log,
+            wait_seconds=timeout_seconds,
+            max_bytes=self.max_output_bytes,
+        )
         duration_ms = int((perf_counter() - started) * 1000)
         return {
             "distro": distro,
@@ -737,6 +745,7 @@ class ElevatedWslTool:
             "launcher_exit_code": completed.returncode,
             "launcher_stdout": completed.stdout,
             "launcher_stderr": completed.stderr,
+            **log_result,
             "duration_ms": duration_ms,
             "risk": "requires_admin_approval",
         }
@@ -862,6 +871,43 @@ def _block_dangerous_command(command: str, shell: str) -> None:
         )
     if any(re.search(pattern, normalized) for pattern in blocked_patterns):
         raise ToolExecutionError("Terminal command is blocked by safety policy")
+
+
+def _collect_elevated_log_result(
+    *,
+    stdout_log: Path,
+    stderr_log: Path,
+    exit_code_log: Path,
+    wait_seconds: float,
+    max_bytes: int,
+) -> dict[str, Any]:
+    deadline = perf_counter() + wait_seconds
+    while not exit_code_log.exists() and perf_counter() < deadline:
+        sleep(0.1)
+    completed = exit_code_log.exists()
+    stdout, stdout_truncated = _read_optional_truncated_file(stdout_log, max_bytes)
+    stderr, stderr_truncated = _read_optional_truncated_file(stderr_log, max_bytes)
+    exit_code = None
+    if completed:
+        raw_exit_code = exit_code_log.read_text(encoding="utf-8", errors="replace").strip()
+        try:
+            exit_code = int(raw_exit_code)
+        except ValueError:
+            exit_code = None
+    return {
+        "completed": completed,
+        "exit_code": exit_code,
+        "stdout": stdout,
+        "stderr": stderr,
+        "stdout_truncated": stdout_truncated,
+        "stderr_truncated": stderr_truncated,
+    }
+
+
+def _read_optional_truncated_file(path: Path, max_bytes: int) -> tuple[str, bool]:
+    if not path.exists():
+        return "", False
+    return _truncate_text(path.read_text(encoding="utf-8", errors="replace"), max_bytes)
 
 
 def _ps_quote(value: str) -> str:

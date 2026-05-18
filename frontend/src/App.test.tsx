@@ -65,6 +65,12 @@ describe("Run Console", () => {
               permission_category: "network.public_search",
               input_schema: {},
             },
+            {
+              name: "run_elevated_wsl_command",
+              description: "Launch a WSL command through a Windows UAC elevation prompt.",
+              permission_category: "terminal.elevated",
+              input_schema: {},
+            },
           ]);
         }
         if (url.endsWith("/memory") && init?.method === "POST") {
@@ -99,7 +105,7 @@ describe("Run Console", () => {
               contract: {
                 goal: "research battery safety",
                 constraints: "Use only safe tools.",
-                allowed_tools: ["calculator", "web_search"],
+                allowed_tools: ["calculator", "web_search", "run_elevated_wsl_command"],
                 success_criteria: ["Answer the goal"],
                 expected_output: "Markdown answer",
               },
@@ -118,7 +124,7 @@ describe("Run Console", () => {
             contract: {
               goal: "research battery safety",
               constraints: "Use only safe tools.",
-              allowed_tools: ["calculator", "web_search"],
+                allowed_tools: ["calculator", "web_search", "run_elevated_wsl_command"],
               success_criteria: ["Answer the goal"],
               expected_output: "Markdown answer",
             },
@@ -141,7 +147,10 @@ describe("Run Console", () => {
               id: "evt-2",
               sequence: 2,
               event_type: "plan.created",
-              payload: { steps: ["Review the run contract"], allowed_tools: ["calculator", "web_search"] },
+              payload: {
+                steps: ["Review the run contract"],
+                allowed_tools: ["calculator", "web_search", "run_elevated_wsl_command"],
+              },
               created_at: "2026-05-08T12:00:01Z",
             },
             {
@@ -239,24 +248,38 @@ describe("Run Console", () => {
     const fetchMock = vi.mocked(fetch);
     render(<App />);
 
+    await userEvent.click(await screen.findByRole("button", { name: /allowed tools/i }));
     await userEvent.click(await screen.findByLabelText(/web_search/i));
     await userEvent.type(screen.getByLabelText(/research goal/i), "research battery safety");
     await userEvent.click(screen.getByRole("button", { name: /start run/i }));
 
-    await waitFor(() =>
-      expect(fetchMock).toHaveBeenCalledWith(
-        expect.stringContaining("/runs"),
-        expect.objectContaining({
-          method: "POST",
-          body: expect.stringContaining('"allowed_tools":["calculator"]'),
-        }),
-      ),
-    );
+    await waitFor(() => {
+      const createCall = fetchMock.mock.calls.find(
+        ([url, init]) => String(url).endsWith("/runs") && init?.method === "POST",
+      );
+      expect(createCall).toBeDefined();
+      const body = JSON.parse(String(createCall?.[1]?.body));
+      expect(body.allowed_tools).toEqual(["calculator", "run_elevated_wsl_command"]);
+    });
 
     await userEvent.type(screen.getByLabelText(/new memory/i), "Thermal runaway notes");
     await userEvent.click(screen.getByRole("button", { name: /add memory/i }));
 
     expect(await screen.findByText(/Thermal runaway notes/i)).toBeInTheDocument();
+  });
+
+  it("shows allowed tools in a dropdown menu with elevated WSL visible", async () => {
+    render(<App />);
+
+    const trigger = await screen.findByRole("button", { name: /allowed tools/i });
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByLabelText(/run_elevated_wsl_command/i)).not.toBeInTheDocument();
+
+    await userEvent.click(trigger);
+
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
+    expect(await screen.findByLabelText(/run_elevated_wsl_command/i)).toBeChecked();
+    expect(screen.getByText("terminal.elevated")).toBeInTheDocument();
   });
 
   it("supports duplicate, retry, and cancel run controls", async () => {

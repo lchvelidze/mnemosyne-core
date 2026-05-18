@@ -418,12 +418,27 @@ def test_elevated_wsl_builds_uac_launch_and_wrapper(
     monkeypatch: pytest.MonkeyPatch, registry: ToolRegistry, tmp_path: Path
 ) -> None:
     captured: dict = {}
+    invocation_id = "22222222222222222222222222222222"
+    log_dir = tmp_path / "allowed" / ".mnemosyne-elevated-wsl"
+
+    def fake_uuid4():
+        return type("FakeUuid", (), {"hex": invocation_id})()
 
     def fake_run(command, **kwargs):
         captured["command"] = command
         captured["kwargs"] = kwargs
+        (log_dir / f"elevated-wsl-{invocation_id}.stdout.log").write_text(
+            "", encoding="utf-8"
+        )
+        (log_dir / f"elevated-wsl-{invocation_id}.stderr.log").write_text(
+            "", encoding="utf-8"
+        )
+        (log_dir / f"elevated-wsl-{invocation_id}.exitcode.txt").write_text(
+            "0\n", encoding="utf-8"
+        )
         return subprocess.CompletedProcess(command, 0, stdout="started", stderr="")
 
+    monkeypatch.setattr("mnemosyne_core.tools.uuid.uuid4", fake_uuid4)
     monkeypatch.setattr("mnemosyne_core.tools.subprocess.run", fake_run)
 
     result = registry.execute(
@@ -459,6 +474,47 @@ def test_elevated_wsl_builds_uac_launch_and_wrapper(
     assert "Ubuntu" in wrapper_text
     assert "/mnt/f/projects" in wrapper_text
     assert "touch hello.txt && pwd" in wrapper_text
+
+
+def test_elevated_wsl_returns_completed_log_output(
+    monkeypatch: pytest.MonkeyPatch, registry: ToolRegistry, tmp_path: Path
+) -> None:
+    invocation_id = "11111111111111111111111111111111"
+    log_dir = tmp_path / "allowed" / ".mnemosyne-elevated-wsl"
+
+    def fake_uuid4():
+        return type("FakeUuid", (), {"hex": invocation_id})()
+
+    def fake_run(command, **kwargs):
+        (log_dir / f"elevated-wsl-{invocation_id}.stdout.log").write_text(
+            "openclaw updated successfully\n", encoding="utf-8"
+        )
+        (log_dir / f"elevated-wsl-{invocation_id}.stderr.log").write_text(
+            "checking packages\n", encoding="utf-8"
+        )
+        (log_dir / f"elevated-wsl-{invocation_id}.exitcode.txt").write_text(
+            "0\n", encoding="utf-8"
+        )
+        return subprocess.CompletedProcess(command, 0, stdout="started", stderr="")
+
+    monkeypatch.setattr("mnemosyne_core.tools.uuid.uuid4", fake_uuid4)
+    monkeypatch.setattr("mnemosyne_core.tools.subprocess.run", fake_run)
+
+    result = registry.execute(
+        "run_elevated_wsl_command",
+        {
+            "working_directory": "/mnt/f",
+            "command": "openclaw update",
+            "timeout_seconds": 10,
+        },
+    )
+
+    assert result["completed"] is True
+    assert result["exit_code"] == 0
+    assert result["stdout"] == "openclaw updated successfully\n"
+    assert result["stderr"] == "checking packages\n"
+    assert result["stdout_truncated"] is False
+    assert result["stderr_truncated"] is False
 
 
 def test_web_search_parses_result_titles_urls_and_snippets() -> None:

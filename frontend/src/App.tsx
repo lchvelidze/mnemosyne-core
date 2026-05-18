@@ -1,6 +1,7 @@
 import {
   Activity,
   Brain,
+  ChevronDown,
   CheckCircle2,
   Copy,
   History,
@@ -53,6 +54,7 @@ export default function App() {
   const [allMemories, setAllMemories] = useState<MemoryRecord[]>([]);
   const [tools, setTools] = useState<ToolSpec[]>([]);
   const [selectedTools, setSelectedTools] = useState<string[]>([]);
+  const [isToolMenuOpen, setIsToolMenuOpen] = useState(false);
   const [newMemory, setNewMemory] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [isCreating, setIsCreating] = useState(false);
@@ -63,6 +65,23 @@ export default function App() {
     if (!selectedRun?.eval) return null;
     return Math.round(selectedRun.eval.score * 100);
   }, [selectedRun]);
+  const toolGroups = useMemo(() => {
+    const groups = new Map<string, ToolSpec[]>();
+    for (const tool of tools) {
+      const existing = groups.get(tool.permission_category) ?? [];
+      groups.set(tool.permission_category, [...existing, tool]);
+    }
+    return Array.from(groups.entries()).map(([permission, items]) => ({
+      permission,
+      tools: items,
+    }));
+  }, [tools]);
+  const selectedToolSummary = useMemo(() => {
+    if (tools.length === 0) return "No tools loaded";
+    if (selectedTools.length === tools.length) return `All ${tools.length} tools enabled`;
+    if (selectedTools.length === 0) return "No tools selected";
+    return `${selectedTools.length} of ${tools.length} tools enabled`;
+  }, [selectedTools.length, tools.length]);
 
   const loadRun = useCallback(async (runId: string) => {
     const [run, runMemory, runEvents] = await Promise.all([getRun(runId), getRunMemory(runId), getRunEvents(runId)]);
@@ -114,6 +133,7 @@ export default function App() {
       });
       setSelectedRun(run);
       setGoal("");
+      setIsToolMenuOpen(false);
       await refreshRuns();
       attachEventStream(run.id);
     } catch (caught) {
@@ -188,6 +208,14 @@ export default function App() {
     setSelectedTools((current) =>
       current.includes(toolName) ? current.filter((name) => name !== toolName) : [...current, toolName],
     );
+  }
+
+  function handleSelectAllTools() {
+    setSelectedTools(tools.map((tool) => tool.name));
+  }
+
+  function handleClearTools() {
+    setSelectedTools([]);
   }
 
   async function handleAddMemory(event: FormEvent<HTMLFormElement>) {
@@ -290,19 +318,59 @@ export default function App() {
             </div>
             <fieldset className="tool-selector">
               <legend>Allowed Tools</legend>
-              <div className="tool-grid">
-                {tools.map((tool) => (
-                  <label key={tool.name} title={tool.description}>
-                    <input
-                      checked={selectedTools.includes(tool.name)}
-                      onChange={() => handleToolToggle(tool.name)}
-                      type="checkbox"
-                    />
-                    <span>{tool.name}</span>
-                    <small>{tool.permission_category}</small>
-                  </label>
-                ))}
-              </div>
+              <button
+                aria-controls="allowed-tools-menu"
+                aria-expanded={isToolMenuOpen}
+                className="tool-menu-trigger"
+                onClick={() => setIsToolMenuOpen((open) => !open)}
+                type="button"
+              >
+                <span className="tool-trigger-icon">
+                  <Wrench aria-hidden="true" />
+                </span>
+                <span className="tool-trigger-copy">
+                  <strong>Allowed Tools</strong>
+                  <small>{selectedToolSummary}</small>
+                </span>
+                <ChevronDown aria-hidden="true" className={isToolMenuOpen ? "open" : ""} />
+              </button>
+              {isToolMenuOpen ? (
+                <div className="tool-menu-panel" id="allowed-tools-menu">
+                  <div className="tool-menu-toolbar">
+                    <span>{selectedToolSummary}</span>
+                    <div>
+                      <button onClick={handleSelectAllTools} type="button">
+                        Select all
+                      </button>
+                      <button onClick={handleClearTools} type="button">
+                        Clear
+                      </button>
+                    </div>
+                  </div>
+                  <div className="tool-menu-list">
+                    {toolGroups.map((group) => (
+                      <section className="tool-group" key={group.permission}>
+                        <h3>{group.permission}</h3>
+                        <div className="tool-group-list">
+                          {group.tools.map((tool) => (
+                            <label className="tool-option" key={tool.name} title={tool.description}>
+                              <input
+                                checked={selectedTools.includes(tool.name)}
+                                onChange={() => handleToolToggle(tool.name)}
+                                type="checkbox"
+                              />
+                              <span>
+                                <strong>{tool.name}</strong>
+                                <small>{tool.description}</small>
+                              </span>
+                            </label>
+                          ))}
+                        </div>
+                      </section>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
             </fieldset>
           </form>
 
