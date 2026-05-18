@@ -18,6 +18,9 @@ class Settings(BaseSettings):
     terminal_shells: list[str] = Field(default_factory=lambda: ["powershell"])
     terminal_timeout_seconds: float = 30.0
     terminal_max_output_bytes: int = 100_000
+    elevated_powershell_enabled: bool = False
+    elevated_powershell_timeout_seconds: float = 60.0
+    elevated_powershell_log_dir: str = "data/elevated"
     wsl_distro: str = "Ubuntu"
     wsl_allowed_roots: list[str] = Field(default_factory=list)
 

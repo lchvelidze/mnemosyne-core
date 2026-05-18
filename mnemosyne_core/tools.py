@@ -8,6 +8,7 @@ import posixpath
 import re
 import socket
 import subprocess
+import uuid
 from collections.abc import Callable
 from html.parser import HTMLParser
 from pathlib import Path
@@ -175,6 +176,41 @@ class ToolRegistry:
                     permission_category="terminal.modify",
                 ),
                 terminal_tool.execute,
+            )
+        if settings.elevated_powershell_enabled:
+            elevated_powershell_tool = ElevatedPowerShellTool(settings)
+            registry.register(
+                ToolSpec(
+                    name="run_elevated_powershell",
+                    description=(
+                        "Launch a Windows PowerShell .ps1 script through a UAC elevation prompt. "
+                        "Scripts, working directories, and log files must stay under allowed "
+                        f"Windows roots: {allowed_roots_description}."
+                    ),
+                    input_schema={
+                        "type": "object",
+                        "required": ["script_path", "working_directory"],
+                        "properties": {
+                            "script_path": {"type": "string"},
+                            "working_directory": {"type": "string"},
+                            "arguments": {
+                                "type": "array",
+                                "items": {
+                                    "type": ["string", "number", "boolean"],
+                                },
+                                "default": [],
+                            },
+                            "timeout_seconds": {
+                                "type": "number",
+                                "minimum": 1,
+                                "maximum": settings.elevated_powershell_timeout_seconds,
+                                "default": settings.elevated_powershell_timeout_seconds,
+                            },
+                        },
+                    },
+                    permission_category="terminal.elevated",
+                ),
+                elevated_powershell_tool.execute,
             )
         return registry
 
@@ -428,9 +464,194 @@ class TerminalTool:
             raise ToolExecutionError(f"Terminal command failed to start: {exc}") from exc
 
 
+class ElevatedPowerShellTool:
+    def __init__(self, settings: Settings) -> None:
+        self.allowed_windows_roots = [
+            Path(root).resolve() for root in settings.allowed_file_roots
+        ]
+        self.default_timeout_seconds = settings.elevated_powershell_timeout_seconds
+        self.log_dir = self._allowed_path(
+            settings.elevated_powershell_log_dir,
+            label="Log directory",
+            must_exist=False,
+        )
+
+    def execute(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        script_path = self._allowed_path(arguments.get("script_path"), label="Script")
+        if script_path.suffix.lower() != ".ps1":
+            raise ToolExecutionError("Elevated PowerShell script must be a .ps1 file")
+        if not script_path.is_file():
+            raise ToolExecutionError(f"Script is not a file: {script_path}")
+        working_directory = self._allowed_path(
+            arguments.get("working_directory"),
+            label="Working directory",
+        )
+        if not working_directory.is_dir():
+            raise ToolExecutionError(
+                f"Working directory is not a directory: {working_directory}"
+            )
+        tool_arguments = self._arguments(arguments.get("arguments", []))
+        timeout_seconds = self._timeout(arguments.get("timeout_seconds"))
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+        invocation_id = uuid.uuid4().hex
+        wrapper_path = self.log_dir / f"elevated-{invocation_id}.ps1"
+        stdout_log = self.log_dir / f"elevated-{invocation_id}.stdout.log"
+        stderr_log = self.log_dir / f"elevated-{invocation_id}.stderr.log"
+        exit_code_log = self.log_dir / f"elevated-{invocation_id}.exitcode.txt"
+        wrapper_path.write_text(
+            self._wrapper_script(
+                script_path=script_path,
+                working_directory=working_directory,
+                arguments=tool_arguments,
+                stdout_log=stdout_log,
+                stderr_log=stderr_log,
+                exit_code_log=exit_code_log,
+            ),
+            encoding="utf-8",
+            newline="\n",
+        )
+        launcher_arguments = _ps_array(
+            ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(wrapper_path)]
+        )
+        launch_command = [
+            "powershell.exe",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            (
+                "Start-Process powershell.exe "
+                f"-Verb RunAs -WorkingDirectory {_ps_quote(str(working_directory))} "
+                f"-ArgumentList {launcher_arguments}"
+            ),
+        ]
+        started = perf_counter()
+        try:
+            completed = subprocess.run(
+                launch_command,
+                cwd=str(working_directory),
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout_seconds,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            message = f"Elevated PowerShell launch timed out after {timeout_seconds:g}s"
+            raise ToolExecutionError(message) from exc
+        except OSError as exc:
+            raise ToolExecutionError(
+                f"Elevated PowerShell launch failed to start: {exc}"
+            ) from exc
+        duration_ms = int((perf_counter() - started) * 1000)
+        return {
+            "script_path": str(script_path),
+            "working_directory": str(working_directory),
+            "arguments": tool_arguments,
+            "wrapper_path": str(wrapper_path),
+            "stdout_log": str(stdout_log),
+            "stderr_log": str(stderr_log),
+            "exit_code_log": str(exit_code_log),
+            "uac_started": completed.returncode == 0,
+            "launcher_exit_code": completed.returncode,
+            "launcher_stdout": completed.stdout,
+            "launcher_stderr": completed.stderr,
+            "duration_ms": duration_ms,
+            "risk": "requires_admin_approval",
+        }
+
+    def _allowed_path(
+        self,
+        raw_path: Any,
+        *,
+        label: str,
+        must_exist: bool = True,
+    ) -> Path:
+        if not isinstance(raw_path, str) or not raw_path.strip():
+            raise ToolExecutionError(f"{label} path is required")
+        path = _normalize_local_path(raw_path)
+        if not path.is_absolute():
+            path = self.allowed_windows_roots[0] / path
+        path = path.resolve()
+        if not any(path == root or root in path.parents for root in self.allowed_windows_roots):
+            raise ToolExecutionError(f"{label} is outside allowed roots: {path}")
+        if must_exist and not path.exists():
+            raise ToolExecutionError(f"{label} does not exist: {path}")
+        return path
+
+    def _timeout(self, raw_timeout: Any) -> float:
+        if raw_timeout is None:
+            return self.default_timeout_seconds
+        if not isinstance(raw_timeout, int | float):
+            raise ToolExecutionError("timeout_seconds must be a number")
+        timeout = float(raw_timeout)
+        if timeout <= 0:
+            raise ToolExecutionError("timeout_seconds must be positive")
+        return min(timeout, self.default_timeout_seconds)
+
+    @staticmethod
+    def _arguments(raw_arguments: Any) -> list[str]:
+        if raw_arguments is None:
+            return []
+        if not isinstance(raw_arguments, list):
+            raise ToolExecutionError("arguments must be a list")
+        values: list[str] = []
+        for value in raw_arguments:
+            if not isinstance(value, str | int | float | bool):
+                raise ToolExecutionError("arguments must contain strings, numbers, or booleans")
+            values.append(str(value))
+        return values
+
+    @staticmethod
+    def _wrapper_script(
+        *,
+        script_path: Path,
+        working_directory: Path,
+        arguments: list[str],
+        stdout_log: Path,
+        stderr_log: Path,
+        exit_code_log: Path,
+    ) -> str:
+        ps_arguments = ", ".join(_ps_quote(argument) for argument in arguments)
+        return "\n".join(
+            [
+                "$ErrorActionPreference = 'Stop'",
+                f"$stdoutLog = {_ps_quote(str(stdout_log))}",
+                f"$stderrLog = {_ps_quote(str(stderr_log))}",
+                f"$exitCodeLog = {_ps_quote(str(exit_code_log))}",
+                f"Set-Location -LiteralPath {_ps_quote(str(working_directory))}",
+                f"$mnemosyneArgs = @({ps_arguments})",
+                "try {",
+                (
+                    f"  & {_ps_quote(str(script_path))} @mnemosyneArgs "
+                    "1> $stdoutLog 2> $stderrLog"
+                ),
+                "  $code = $LASTEXITCODE",
+                "  if ($null -eq $code) { $code = 0 }",
+                "} catch {",
+                "  $_ | Out-String | Set-Content -LiteralPath $stderrLog -Encoding UTF8",
+                "  $code = 1",
+                "}",
+                "$code | Set-Content -LiteralPath $exitCodeLog -Encoding UTF8",
+                "exit $code",
+                "",
+            ]
+        )
+
+
 def _normalize_wsl_root(raw_path: str) -> str:
     normalized = raw_path.replace("\\", "/")
     return posixpath.normpath(normalized if normalized.startswith("/") else f"/{normalized}")
+
+
+def _ps_quote(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _ps_array(values: list[str]) -> str:
+    return "@(" + ", ".join(_ps_quote(value) for value in values) + ")"
 
 
 def _truncate_text(value: str, max_bytes: int) -> tuple[str, bool]:

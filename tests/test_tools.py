@@ -19,6 +19,8 @@ def registry(tmp_path: Path) -> ToolRegistry:
             terminal_enabled=True,
             terminal_shells=["powershell", "wsl"],
             terminal_max_output_bytes=2048,
+            elevated_powershell_enabled=True,
+            elevated_powershell_log_dir=str(allowed / ".mnemosyne-elevated"),
             wsl_allowed_roots=["/mnt/f"],
             http_timeout_seconds=1.0,
             http_max_bytes=2048,
@@ -127,6 +129,18 @@ def test_registry_includes_terminal_tool_when_enabled(registry: ToolRegistry) ->
 
     assert terminal.permission_category == "terminal.modify"
     assert terminal.input_schema["properties"]["shell"]["enum"] == ["powershell", "wsl"]
+
+
+def test_registry_includes_elevated_powershell_tool_when_enabled(
+    registry: ToolRegistry,
+) -> None:
+    elevated = next(
+        spec for spec in registry.specs() if spec.name == "run_elevated_powershell"
+    )
+
+    assert elevated.permission_category == "terminal.elevated"
+    assert elevated.input_schema["required"] == ["script_path", "working_directory"]
+    assert "arguments" in elevated.input_schema["properties"]
 
 
 def test_file_tool_specs_expose_allowed_roots(registry: ToolRegistry, tmp_path: Path) -> None:
@@ -252,6 +266,102 @@ def test_terminal_tool_runs_wsl_with_configured_distro(
     ]
     assert captured["kwargs"]["cwd"] is None
     assert result["stdout"] == "/mnt/f\n"
+
+
+def test_elevated_powershell_blocks_script_outside_allowed_roots(
+    registry: ToolRegistry, tmp_path: Path
+) -> None:
+    script = tmp_path / "outside.ps1"
+    script.write_text("Write-Output nope", encoding="utf-8")
+
+    with pytest.raises(ToolExecutionError, match="outside allowed roots"):
+        registry.execute(
+            "run_elevated_powershell",
+            {
+                "script_path": str(script),
+                "working_directory": str(tmp_path / "allowed"),
+            },
+        )
+
+
+def test_elevated_powershell_blocks_working_directory_outside_allowed_roots(
+    registry: ToolRegistry, tmp_path: Path
+) -> None:
+    script = tmp_path / "allowed" / "task.ps1"
+    script.write_text("Write-Output ok", encoding="utf-8")
+
+    with pytest.raises(ToolExecutionError, match="outside allowed roots"):
+        registry.execute(
+            "run_elevated_powershell",
+            {
+                "script_path": str(script),
+                "working_directory": str(tmp_path),
+            },
+        )
+
+
+def test_elevated_powershell_requires_ps1_script(
+    registry: ToolRegistry, tmp_path: Path
+) -> None:
+    script = tmp_path / "allowed" / "task.txt"
+    script.write_text("Write-Output ok", encoding="utf-8")
+
+    with pytest.raises(ToolExecutionError, match="ps1"):
+        registry.execute(
+            "run_elevated_powershell",
+            {
+                "script_path": str(script),
+                "working_directory": str(tmp_path / "allowed"),
+            },
+        )
+
+
+def test_elevated_powershell_builds_uac_launch_and_wrapper(
+    monkeypatch: pytest.MonkeyPatch, registry: ToolRegistry, tmp_path: Path
+) -> None:
+    captured: dict = {}
+    script = tmp_path / "allowed" / "open_chrome.ps1"
+    script.write_text("param($Url)\nWrite-Output $Url\n", encoding="utf-8")
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        return subprocess.CompletedProcess(command, 0, stdout="started", stderr="")
+
+    monkeypatch.setattr("mnemosyne_core.tools.subprocess.run", fake_run)
+
+    result = registry.execute(
+        "run_elevated_powershell",
+        {
+            "script_path": str(script),
+            "working_directory": str(tmp_path / "allowed"),
+            "arguments": ["https://example.com/?q=a b"],
+            "timeout_seconds": 10,
+        },
+    )
+
+    assert captured["command"][:5] == [
+        "powershell.exe",
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+    ]
+    launch_script = captured["command"][-1]
+    assert "Start-Process" in launch_script
+    assert "-Verb RunAs" in launch_script
+    assert captured["kwargs"]["cwd"] == str((tmp_path / "allowed").resolve())
+    assert result["risk"] == "requires_admin_approval"
+    assert result["uac_started"] is True
+    assert result["script_path"] == str(script.resolve())
+    assert result["working_directory"] == str((tmp_path / "allowed").resolve())
+    assert Path(result["wrapper_path"]).is_file()
+    assert Path(result["stdout_log"]).parent == Path(result["wrapper_path"]).parent
+    assert Path(result["stderr_log"]).parent == Path(result["wrapper_path"]).parent
+    assert Path(result["exit_code_log"]).parent == Path(result["wrapper_path"]).parent
+    wrapper_text = Path(result["wrapper_path"]).read_text(encoding="utf-8")
+    assert str(script.resolve()) in wrapper_text
+    assert "https://example.com/?q=a b" in wrapper_text
 
 
 def test_web_search_parses_result_titles_urls_and_snippets() -> None:
