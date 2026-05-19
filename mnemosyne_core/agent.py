@@ -8,6 +8,7 @@ from mnemosyne_core.evals import score_answer
 from mnemosyne_core.memory import MemoryStore
 from mnemosyne_core.model_client import ModelClient, ModelRequest
 from mnemosyne_core.models import AgentRun, TaskContract
+from mnemosyne_core.skills import SkillStore
 from mnemosyne_core.tools import ToolExecutionError, ToolRegistry
 
 
@@ -18,11 +19,13 @@ class AgentRuntime:
         memory: MemoryStore,
         tools: ToolRegistry,
         model_client: ModelClient,
+        skills: SkillStore | None = None,
     ) -> None:
         self.db = db
         self.memory = memory
         self.tools = tools
         self.model_client = model_client
+        self.skills = skills
 
     async def run_goal(self, goal: str, contract: TaskContract | None = None) -> AgentRun:
         contract = contract or default_contract(goal, self.tools.names())
@@ -53,6 +56,7 @@ class AgentRuntime:
                 allowed_tools = self.tools.names()
             self.db.append_event(run_id, "plan.created", build_plan(goal, allowed_tools, contract))
             memories = self.memory.search(goal, limit=5)
+            skills = self.skills.search(goal, limit=5) if self.skills else []
             self.db.attach_run_memories(run_id, memories)
             self.db.append_event(
                 run_id,
@@ -61,11 +65,21 @@ class AgentRuntime:
             )
             self.db.append_event(
                 run_id,
+                "skills.retrieved",
+                {"skills": [skill.to_dict() for skill in skills]},
+            )
+            self.db.append_event(
+                run_id,
                 "model.started",
                 {"model_configured": self.model_client.configured},
             )
             response = await self.model_client.complete(
-                ModelRequest(goal=goal, memories=memories, tools=self.tools.specs(allowed_tools))
+                ModelRequest(
+                    goal=goal,
+                    memories=memories,
+                    skills=skills,
+                    tools=self.tools.specs(allowed_tools),
+                )
             )
             self.db.append_event(
                 run_id,
@@ -94,6 +108,7 @@ class AgentRuntime:
                     ModelRequest(
                         goal=goal,
                         memories=memories,
+                        skills=skills,
                         tools=self.tools.specs(allowed_tools),
                         tool_results=tool_results,
                     )
@@ -127,6 +142,7 @@ class AgentRuntime:
                             ModelRequest(
                                 goal=goal,
                                 memories=memories,
+                                skills=skills,
                                 tools=self.tools.specs(allowed_tools),
                                 tool_results=tool_results,
                             )
@@ -293,6 +309,7 @@ def build_plan(
         "steps": [
             "Review the run contract and permission boundary.",
             "Retrieve relevant memory records from local SQLite FTS.",
+            "Retrieve relevant reusable skills from local SQLite FTS.",
             "Ask the model for a tool-aware research step.",
             "Execute only tools allowed by the contract.",
             "Synthesize a Markdown answer and create an eval record.",

@@ -549,7 +549,8 @@ pre {
 }
 
 .run-actions button,
-.memory-form button {
+.memory-form button,
+.skill-form button {
   min-height: 38px;
   border: 1px solid #c8d5cd;
   border-radius: 8px;
@@ -563,13 +564,15 @@ pre {
 }
 
 .run-actions button:disabled,
-.memory-form button:disabled {
+.memory-form button:disabled,
+.skill-form button:disabled {
   cursor: not-allowed;
   opacity: 0.55;
 }
 
 .run-actions svg,
-.memory-form svg {
+.memory-form svg,
+.skill-form svg {
   width: 16px;
   height: 16px;
 }
@@ -601,21 +604,29 @@ pre {
   color: #66736b;
 }
 
-.memory-form {
+.memory-form,
+.skill-form {
   display: grid;
   gap: 8px;
   margin-bottom: 10px;
 }
 
-.memory-form label {
+.memory-form label,
+.skill-form label {
   font-weight: 800;
 }
 
-.memory-form textarea {
+.memory-form textarea,
+.skill-form textarea {
   min-height: 64px;
 }
 
-.memory-list.compact {
+.skill-form input {
+  min-height: 38px;
+}
+
+.memory-list.compact,
+.skill-list.compact {
   max-height: 260px;
   overflow: auto;
 }
@@ -666,7 +677,8 @@ pre {
   overflow-wrap: anywhere;
 }
 
-.memory-list {
+.memory-list,
+.skill-list {
   list-style: none;
   padding: 0;
   margin: 0;
@@ -674,7 +686,8 @@ pre {
   gap: 8px;
 }
 
-.memory-list li {
+.memory-list li,
+.skill-list li {
   border: 1px solid #d8e1da;
   border-radius: 8px;
   padding: 10px 12px;
@@ -682,14 +695,22 @@ pre {
 }
 
 .memory-list span,
-.memory-list small {
+.memory-list small,
+.skill-list strong,
+.skill-list span,
+.skill-list small {
   display: block;
   overflow-wrap: anywhere;
 }
 
-.memory-list small {
+.memory-list small,
+.skill-list small {
   margin-top: 4px;
   color: #66736b;
+}
+
+.skill-list span {
+  margin-top: 4px;
 }
 
 .eval-box {

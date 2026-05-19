@@ -39,6 +39,18 @@ export type MemoryRecord = {
   created_at?: string;
 };
 
+export type SkillRecord = {
+  id: string;
+  name: string;
+  description: string;
+  instructions: string;
+  trigger_terms: string[];
+  tool_names: string[];
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
 export type RunEvent = {
   id?: string;
   sequence?: number;
@@ -116,5 +128,23 @@ export function createMemory(text: string) {
   return request<MemoryRecord>("/memory", {
     method: "POST",
     body: JSON.stringify({ text, source: "manual", tags: [], importance: 0.5 }),
+  });
+}
+
+export function listSkills() {
+  return request<SkillRecord[]>("/skills");
+}
+
+export function createSkill(payload: {
+  name: string;
+  description: string;
+  instructions: string;
+  trigger_terms: string[];
+  tool_names: string[];
+  enabled: boolean;
+}) {
+  return request<SkillRecord>("/skills", {
+    method: "POST",
+    body: JSON.stringify(payload),
   });
 }

@@ -20,6 +20,7 @@ import httpx
 
 from mnemosyne_core.config import Settings
 from mnemosyne_core.models import ToolSpec
+from mnemosyne_core.skills import SkillStore
 
 
 class ToolExecutionError(Exception):
@@ -34,13 +35,14 @@ class ToolRegistry:
         self._tools: dict[str, tuple[ToolSpec, ToolHandler]] = {}
 
     @classmethod
-    def safe_defaults(cls, settings: Settings) -> ToolRegistry:
+    def safe_defaults(cls, settings: Settings, skills: SkillStore | None = None) -> ToolRegistry:
         registry = cls()
         file_tools = FileTools(settings.allowed_file_roots)
         allowed_roots_description = file_tools.allowed_roots_description()
         http_tool = HttpGetTool(settings.http_timeout_seconds, settings.http_max_bytes)
         web_search_tool = WebSearchTool(settings.http_timeout_seconds)
         terminal_tool = TerminalTool(settings)
+        skill_tools = SkillTools(skills) if skills else None
         registry.register(
             ToolSpec(
                 name="read_text_file",
@@ -145,6 +147,54 @@ class ToolRegistry:
             ),
             web_search_tool.execute,
         )
+        if skill_tools:
+            registry.register(
+                ToolSpec(
+                    name="create_skill",
+                    description=(
+                        "Create a reusable Mnemosyne skill with trigger terms, "
+                        "instructions, and optional preferred tools. Use this when "
+                        "the user asks to teach the agent a repeatable workflow."
+                    ),
+                    input_schema={
+                        "type": "object",
+                        "required": ["name", "description", "instructions"],
+                        "properties": {
+                            "name": {"type": "string"},
+                            "description": {"type": "string"},
+                            "instructions": {"type": "string"},
+                            "trigger_terms": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "default": [],
+                            },
+                            "tool_names": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "default": [],
+                            },
+                            "enabled": {"type": "boolean", "default": True},
+                        },
+                    },
+                    permission_category="skills.write",
+                ),
+                skill_tools.create_skill,
+            )
+            registry.register(
+                ToolSpec(
+                    name="list_skills",
+                    description="List reusable Mnemosyne skills available to the agent.",
+                    input_schema={
+                        "type": "object",
+                        "properties": {
+                            "query": {"type": "string"},
+                            "enabled_only": {"type": "boolean", "default": False},
+                        },
+                    },
+                    permission_category="skills.read",
+                ),
+                skill_tools.list_skills,
+            )
         if settings.terminal_enabled:
             registry.register(
                 ToolSpec(
@@ -349,6 +399,42 @@ def _normalize_local_path(raw_path: str) -> Path:
         remainder = "/".join(parts[3:])
         return Path(f"{drive}:/{remainder}")
     return Path(raw_path)
+
+
+class SkillTools:
+    def __init__(self, skills: SkillStore) -> None:
+        self.skills = skills
+
+    def create_skill(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        enabled = arguments.get("enabled", True)
+        if not isinstance(enabled, bool):
+            raise ToolExecutionError("enabled must be a boolean")
+        try:
+            skill = self.skills.create(
+                name=_required_string(arguments, "name"),
+                description=_required_string(arguments, "description"),
+                instructions=_required_string(arguments, "instructions"),
+                trigger_terms=_optional_string_list(arguments.get("trigger_terms")),
+                tool_names=_optional_string_list(arguments.get("tool_names")),
+                enabled=enabled,
+            )
+        except ValueError as exc:
+            raise ToolExecutionError(str(exc)) from exc
+        return {"skill": skill.to_dict()}
+
+    def list_skills(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        query = arguments.get("query")
+        enabled_only = arguments.get("enabled_only", False)
+        if query is not None and not isinstance(query, str):
+            raise ToolExecutionError("query must be a string")
+        if not isinstance(enabled_only, bool):
+            raise ToolExecutionError("enabled_only must be a boolean")
+        skills = (
+            self.skills.search(query, limit=10)
+            if isinstance(query, str) and query.strip()
+            else self.skills.list(enabled_only=enabled_only)
+        )
+        return {"skills": [skill.to_dict() for skill in skills]}
 
 
 class TerminalTool:
@@ -872,6 +958,21 @@ class ElevatedWslTool:
 def _normalize_wsl_root(raw_path: str) -> str:
     normalized = raw_path.replace("\\", "/")
     return posixpath.normpath(normalized if normalized.startswith("/") else f"/{normalized}")
+
+
+def _required_string(arguments: dict[str, Any], key: str) -> str:
+    value = arguments.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise ToolExecutionError(f"{key} must be a non-empty string")
+    return value.strip()
+
+
+def _optional_string_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise ToolExecutionError("Expected a list of strings")
+    return [item.strip() for item in value if item.strip()]
 
 
 def _normalize_wsl_shell_mode(raw_mode: Any) -> str:

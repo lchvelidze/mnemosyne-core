@@ -1,5 +1,6 @@
 import {
   Activity,
+  BookOpenCheck,
   Brain,
   ChevronDown,
   CheckCircle2,
@@ -21,15 +22,18 @@ import {
   AgentRun,
   MemoryRecord,
   RunEvent,
+  SkillRecord,
   ToolSpec,
   cancelRun,
   createMemory,
   createRun,
+  createSkill,
   getRun,
   getRunEvents,
   getRunMemory,
   listMemory,
   listRuns,
+  listSkills,
   listTools,
   retryRun,
 } from "./api";
@@ -39,6 +43,7 @@ type TimelineEvent = RunEvent & { id: string };
 
 function eventIcon(type: string) {
   if (type.startsWith("memory")) return <Brain aria-hidden="true" />;
+  if (type.startsWith("skills")) return <BookOpenCheck aria-hidden="true" />;
   if (type.startsWith("tool")) return <Wrench aria-hidden="true" />;
   if (type.startsWith("eval") || type.includes("completed")) return <CheckCircle2 aria-hidden="true" />;
   if (type.includes("failed")) return <ServerCrash aria-hidden="true" />;
@@ -52,10 +57,15 @@ export default function App() {
   const [events, setEvents] = useState<TimelineEvent[]>([]);
   const [memories, setMemories] = useState<MemoryRecord[]>([]);
   const [allMemories, setAllMemories] = useState<MemoryRecord[]>([]);
+  const [skills, setSkills] = useState<SkillRecord[]>([]);
   const [tools, setTools] = useState<ToolSpec[]>([]);
   const [selectedTools, setSelectedTools] = useState<string[]>([]);
   const [isToolMenuOpen, setIsToolMenuOpen] = useState(false);
   const [newMemory, setNewMemory] = useState("");
+  const [newSkillName, setNewSkillName] = useState("");
+  const [newSkillDescription, setNewSkillDescription] = useState("");
+  const [newSkillInstructions, setNewSkillInstructions] = useState("");
+  const [newSkillTriggers, setNewSkillTriggers] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [isCreating, setIsCreating] = useState(false);
   const eventSourceRef = useRef<EventSource | null>(null);
@@ -100,10 +110,16 @@ export default function App() {
   }, []);
 
   const initializeRuns = useCallback(async () => {
-    const [toolCatalog, memoryRecords, history] = await Promise.all([listTools(), listMemory(), listRuns()]);
+    const [toolCatalog, memoryRecords, skillRecords, history] = await Promise.all([
+      listTools(),
+      listMemory(),
+      listSkills(),
+      listRuns(),
+    ]);
     setTools(toolCatalog);
     setSelectedTools(toolCatalog.map((tool) => tool.name));
     setAllMemories(memoryRecords);
+    setSkills(skillRecords);
     setRuns(history);
     if (history.length > 0) {
       await loadRun(history[0].id);
@@ -151,6 +167,7 @@ export default function App() {
       "run.created",
       "plan.created",
       "memory.retrieved",
+      "skills.retrieved",
       "model.started",
       "model.completed",
       "tool.started",
@@ -227,6 +244,32 @@ export default function App() {
       const created = await createMemory(text);
       setAllMemories((current) => [created, ...current]);
       setNewMemory("");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    }
+  }
+
+  async function handleAddSkill(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const name = newSkillName.trim();
+    const description = newSkillDescription.trim();
+    const instructions = newSkillInstructions.trim();
+    if (!name || !description || !instructions) return;
+    setError(null);
+    try {
+      const created = await createSkill({
+        name,
+        description,
+        instructions,
+        trigger_terms: splitCommaList(newSkillTriggers),
+        tool_names: selectedTools,
+        enabled: true,
+      });
+      setSkills((current) => [created, ...current]);
+      setNewSkillName("");
+      setNewSkillDescription("");
+      setNewSkillInstructions("");
+      setNewSkillTriggers("");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
     }
@@ -494,6 +537,51 @@ export default function App() {
               </div>
 
               <div className="inspection-block">
+                <h3>Skill Manager</h3>
+                <form className="skill-form" onSubmit={(event) => void handleAddSkill(event)}>
+                  <label htmlFor="new-skill-name">Skill name</label>
+                  <input
+                    id="new-skill-name"
+                    onChange={(event) => setNewSkillName(event.target.value)}
+                    value={newSkillName}
+                  />
+                  <label htmlFor="new-skill-description">Description</label>
+                  <input
+                    id="new-skill-description"
+                    onChange={(event) => setNewSkillDescription(event.target.value)}
+                    value={newSkillDescription}
+                  />
+                  <label htmlFor="new-skill-instructions">Instructions</label>
+                  <textarea
+                    id="new-skill-instructions"
+                    onChange={(event) => setNewSkillInstructions(event.target.value)}
+                    rows={3}
+                    value={newSkillInstructions}
+                  />
+                  <label htmlFor="new-skill-triggers">Trigger terms</label>
+                  <input
+                    id="new-skill-triggers"
+                    onChange={(event) => setNewSkillTriggers(event.target.value)}
+                    placeholder="openclaw, model run"
+                    value={newSkillTriggers}
+                  />
+                  <button disabled={!newSkillName.trim() || !newSkillDescription.trim() || !newSkillInstructions.trim()} type="submit">
+                    <Plus aria-hidden="true" />
+                    <span>Add Skill</span>
+                  </button>
+                </form>
+                <ul className="skill-list compact">
+                  {skills.slice(0, 5).map((skill) => (
+                    <li key={skill.id}>
+                      <strong>{skill.name}</strong>
+                      <span>{skill.description}</span>
+                      <small>{skill.trigger_terms.join(", ") || "manual"}</small>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+
+              <div className="inspection-block">
                 <h3>Eval</h3>
                 {selectedRun?.eval ? (
                   <div className="eval-box">
@@ -513,4 +601,11 @@ export default function App() {
       </section>
     </main>
   );
+}
+
+function splitCommaList(value: string) {
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
 }

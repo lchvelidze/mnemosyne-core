@@ -11,6 +11,7 @@ from mnemosyne_core.models import (
     EvalResult,
     MemoryRecord,
     RunEvent,
+    SkillRecord,
     TaskContract,
     now_iso,
 )
@@ -61,6 +62,19 @@ class Database:
                 );
                 CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts
                 USING fts5(memory_id UNINDEXED, text);
+                CREATE TABLE IF NOT EXISTS skills (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL UNIQUE,
+                    description TEXT NOT NULL,
+                    instructions TEXT NOT NULL,
+                    trigger_terms TEXT NOT NULL,
+                    tool_names TEXT NOT NULL,
+                    enabled INTEGER NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE VIRTUAL TABLE IF NOT EXISTS skills_fts
+                USING fts5(skill_id UNINDEXED, name, description, instructions, trigger_terms);
                 CREATE TABLE IF NOT EXISTS run_memories (
                     run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
                     memory_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
@@ -316,6 +330,134 @@ class Database:
             ).fetchall()
         return [self._memory_from_row(row) for row in rows]
 
+    def add_skill(
+        self,
+        *,
+        name: str,
+        description: str,
+        instructions: str,
+        trigger_terms: list[str] | None = None,
+        tool_names: list[str] | None = None,
+        enabled: bool = True,
+    ) -> SkillRecord:
+        timestamp = now_iso()
+        skill = SkillRecord(
+            id=str(uuid.uuid4()),
+            name=name,
+            description=description,
+            instructions=instructions,
+            trigger_terms=trigger_terms or [],
+            tool_names=tool_names or [],
+            enabled=enabled,
+            created_at=timestamp,
+            updated_at=timestamp,
+        )
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO skills
+                (id, name, description, instructions, trigger_terms, tool_names,
+                 enabled, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    skill.id,
+                    skill.name,
+                    skill.description,
+                    skill.instructions,
+                    json.dumps(skill.trigger_terms),
+                    json.dumps(skill.tool_names),
+                    int(skill.enabled),
+                    skill.created_at,
+                    skill.updated_at,
+                ),
+            )
+            self._insert_skill_fts(conn, skill)
+        return skill
+
+    def list_skills(self, *, enabled_only: bool = False) -> list[SkillRecord]:
+        where = "WHERE enabled = 1" if enabled_only else ""
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM skills {where} ORDER BY updated_at DESC, created_at DESC"
+            ).fetchall()
+        return [self._skill_from_row(row) for row in rows]
+
+    def get_skill(self, skill_id: str) -> SkillRecord | None:
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM skills WHERE id = ?", (skill_id,)).fetchone()
+        return self._skill_from_row(row) if row else None
+
+    def update_skill(
+        self,
+        skill_id: str,
+        *,
+        name: str,
+        description: str,
+        instructions: str,
+        trigger_terms: list[str],
+        tool_names: list[str],
+        enabled: bool,
+    ) -> SkillRecord:
+        timestamp = now_iso()
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE skills
+                SET name = ?, description = ?, instructions = ?, trigger_terms = ?,
+                    tool_names = ?, enabled = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    name,
+                    description,
+                    instructions,
+                    json.dumps(trigger_terms),
+                    json.dumps(tool_names),
+                    int(enabled),
+                    timestamp,
+                    skill_id,
+                ),
+            )
+            row = conn.execute("SELECT * FROM skills WHERE id = ?", (skill_id,)).fetchone()
+            if row is None:
+                raise ValueError(f"Skill not found: {skill_id}")
+            skill = self._skill_from_row(row)
+            conn.execute("DELETE FROM skills_fts WHERE skill_id = ?", (skill_id,))
+            self._insert_skill_fts(conn, skill)
+        return skill
+
+    def delete_skill(self, skill_id: str) -> bool:
+        with self.connect() as conn:
+            conn.execute("DELETE FROM skills_fts WHERE skill_id = ?", (skill_id,))
+            cursor = conn.execute("DELETE FROM skills WHERE id = ?", (skill_id,))
+        return cursor.rowcount > 0
+
+    def search_skills(
+        self,
+        query: str,
+        *,
+        limit: int = 5,
+        enabled_only: bool = True,
+    ) -> list[SkillRecord]:
+        fts_query = self._fts_query(query)
+        if not fts_query:
+            return []
+        enabled_filter = "AND s.enabled = 1" if enabled_only else ""
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT s.*
+                FROM skills_fts f
+                JOIN skills s ON s.id = f.skill_id
+                WHERE skills_fts MATCH ? {enabled_filter}
+                ORDER BY bm25(skills_fts), s.updated_at DESC
+                LIMIT ?
+                """,
+                (fts_query, limit),
+            ).fetchall()
+        return [self._skill_from_row(row) for row in rows]
+
     def attach_run_memories(self, run_id: str, memories: list[MemoryRecord]) -> None:
         with self.connect() as conn:
             conn.executemany(
@@ -447,6 +589,37 @@ class Database:
             tags=json.loads(row["tags"]),
             importance=row["importance"],
             created_at=row["created_at"],
+        )
+
+    @staticmethod
+    def _skill_from_row(row: sqlite3.Row) -> SkillRecord:
+        return SkillRecord(
+            id=row["id"],
+            name=row["name"],
+            description=row["description"],
+            instructions=row["instructions"],
+            trigger_terms=json.loads(row["trigger_terms"]),
+            tool_names=json.loads(row["tool_names"]),
+            enabled=bool(row["enabled"]),
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
+    @staticmethod
+    def _insert_skill_fts(conn: sqlite3.Connection, skill: SkillRecord) -> None:
+        conn.execute(
+            """
+            INSERT INTO skills_fts
+            (skill_id, name, description, instructions, trigger_terms)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                skill.id,
+                skill.name,
+                skill.description,
+                skill.instructions,
+                " ".join(skill.trigger_terms),
+            ),
         )
 
     @staticmethod

@@ -88,6 +88,35 @@ describe("Run Console", () => {
             { id: "mem-1", text: "Solar battery research prefers LFP chemistry.", source: "seed" },
           ]);
         }
+        if (url.endsWith("/skills") && init?.method === "POST") {
+          const body = JSON.parse(String(init.body));
+          return Response.json({
+            id: "skill-2",
+            name: body.name.toLowerCase().replaceAll(" ", "_"),
+            description: body.description,
+            instructions: body.instructions,
+            trigger_terms: body.trigger_terms,
+            tool_names: body.tool_names,
+            enabled: body.enabled,
+            created_at: "2026-05-08T12:00:00Z",
+            updated_at: "2026-05-08T12:00:00Z",
+          });
+        }
+        if (url.endsWith("/skills")) {
+          return Response.json([
+            {
+              id: "skill-1",
+              name: "openclaw_infer",
+              description: "Run OpenClaw model inference.",
+              instructions: "Use openclaw infer model run --prompt.",
+              trigger_terms: ["openclaw"],
+              tool_names: ["run_terminal_command"],
+              enabled: true,
+              created_at: "2026-05-08T12:00:00Z",
+              updated_at: "2026-05-08T12:00:00Z",
+            },
+          ]);
+        }
         if (url.endsWith("/runs/run-1/retry")) {
           return Response.json({ id: "run-3", status: "running", goal: "research battery safety" });
         }
@@ -266,6 +295,31 @@ describe("Run Console", () => {
     await userEvent.click(screen.getByRole("button", { name: /add memory/i }));
 
     expect(await screen.findByText(/Thermal runaway notes/i)).toBeInTheDocument();
+  });
+
+  it("adds reusable skills from the skill manager", async () => {
+    const fetchMock = vi.mocked(fetch);
+    render(<App />);
+
+    await userEvent.type(await screen.findByLabelText(/skill name/i), "OpenClaw Model Run");
+    await userEvent.type(screen.getByLabelText(/description/i), "Run OpenClaw model inference.");
+    await userEvent.type(
+      screen.getByLabelText(/instructions/i),
+      "Use openclaw infer model run --prompt for one-shot replies.",
+    );
+    await userEvent.type(screen.getByLabelText(/trigger terms/i), "openclaw, model run");
+    await userEvent.click(screen.getByRole("button", { name: /add skill/i }));
+
+    await waitFor(() => {
+      const createCall = fetchMock.mock.calls.find(
+        ([url, init]) => String(url).endsWith("/skills") && init?.method === "POST",
+      );
+      expect(createCall).toBeDefined();
+      const body = JSON.parse(String(createCall?.[1]?.body));
+      expect(body.trigger_terms).toEqual(["openclaw", "model run"]);
+      expect(body.tool_names).toEqual(["calculator", "web_search", "run_elevated_wsl_command"]);
+    });
+    expect(await screen.findByText("openclaw_model_run")).toBeInTheDocument();
   });
 
   it("shows allowed tools in a dropdown menu with elevated WSL visible", async () => {

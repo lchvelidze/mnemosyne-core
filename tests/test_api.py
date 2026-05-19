@@ -8,6 +8,7 @@ from mnemosyne_core.config import Settings
 from mnemosyne_core.db import Database
 from mnemosyne_core.memory import MemoryStore
 from mnemosyne_core.model_client import ModelRequest, ModelResponse, ToolCallRequest
+from mnemosyne_core.skills import SkillStore
 from mnemosyne_core.tools import ToolRegistry
 
 
@@ -27,11 +28,13 @@ def build_client(tmp_path: Path) -> TestClient:
     db = Database(tmp_path / "mnemosyne.db")
     db.initialize()
     memory = MemoryStore(db)
+    skills = SkillStore(db)
     memory.add("Research runs should show memory hits.", source="seed")
     registry = ToolRegistry.safe_defaults(
-        Settings(database_path=str(tmp_path / "mnemosyne.db"), allowed_file_roots=[str(tmp_path)])
+        Settings(database_path=str(tmp_path / "mnemosyne.db"), allowed_file_roots=[str(tmp_path)]),
+        skills,
     )
-    runtime = AgentRuntime(db, memory, registry, StubModelClient())
+    runtime = AgentRuntime(db, memory, registry, StubModelClient(), skills)
     return TestClient(create_app(runtime, run_inline=True))
 
 
@@ -82,6 +85,7 @@ def test_events_json_endpoint_returns_ordered_events(tmp_path: Path) -> None:
         "plan.created",
         "memory.retrieved",
     ]
+    assert events[3]["event_type"] == "skills.retrieved"
     assert events[-1]["event_type"] == "run.completed"
     assert [event["sequence"] for event in events] == sorted(event["sequence"] for event in events)
     assert all("payload" in event for event in events)
@@ -97,6 +101,7 @@ def test_tool_catalog_exposes_safe_tool_permissions(tmp_path: Path) -> None:
     write_file = next(tool for tool in tools if tool["name"] == "write_text_file")
     assert web_search["permission_category"] == "network.public_search"
     assert write_file["permission_category"] == "filesystem.write"
+    assert {tool["name"] for tool in tools} >= {"create_skill", "list_skills"}
 
 
 def test_memory_crud_endpoints_manage_searchable_memory(tmp_path: Path) -> None:
@@ -130,6 +135,43 @@ def test_memory_crud_endpoints_manage_searchable_memory(tmp_path: Path) -> None:
 
     assert deleted.status_code == 204
     assert all(record["id"] != created["id"] for record in client.get("/memory").json())
+
+
+def test_skill_crud_endpoints_manage_searchable_skills(tmp_path: Path) -> None:
+    client = build_client(tmp_path)
+
+    created = client.post(
+        "/skills",
+        json={
+            "name": "OpenClaw Inference",
+            "description": "Run OpenClaw model inference from WSL.",
+            "instructions": "Use openclaw infer model run for one-shot model replies.",
+            "trigger_terms": ["openclaw", "infer"],
+            "tool_names": ["run_terminal_command"],
+            "enabled": True,
+        },
+    ).json()
+    updated = client.put(
+        f"/skills/{created['id']}",
+        json={
+            "name": "OpenClaw Inference",
+            "description": "Run OpenClaw model inference from WSL.",
+            "instructions": "Use openclaw infer model run --prompt for model replies.",
+            "trigger_terms": ["openclaw", "model run"],
+            "tool_names": ["run_terminal_command"],
+            "enabled": True,
+        },
+    ).json()
+    records = client.get("/skills", params={"query": "model run"}).json()
+
+    assert created["name"] == "openclaw_inference"
+    assert updated["instructions"].endswith("--prompt for model replies.")
+    assert records[0]["id"] == created["id"]
+
+    deleted = client.delete(f"/skills/{created['id']}")
+
+    assert deleted.status_code == 204
+    assert all(skill["id"] != created["id"] for skill in client.get("/skills").json())
 
 
 def test_retry_and_cancel_run_controls(tmp_path: Path) -> None:

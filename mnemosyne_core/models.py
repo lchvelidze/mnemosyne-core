@@ -96,6 +96,32 @@ class MemoryRecord:
 
 
 @dataclass(frozen=True)
+class SkillRecord:
+    id: str
+    name: str
+    description: str
+    instructions: str
+    trigger_terms: list[str]
+    tool_names: list[str]
+    enabled: bool
+    created_at: str
+    updated_at: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "description": self.description,
+            "instructions": self.instructions,
+            "trigger_terms": self.trigger_terms,
+            "tool_names": self.tool_names,
+            "enabled": self.enabled,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+        }
+
+
+@dataclass(frozen=True)
 class ToolSpec:
     name: str
     description: str

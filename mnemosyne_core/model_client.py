@@ -9,7 +9,7 @@ from typing import Any, Protocol
 from litellm import acompletion
 
 from mnemosyne_core.config import Settings
-from mnemosyne_core.models import MemoryRecord, ToolSpec
+from mnemosyne_core.models import MemoryRecord, SkillRecord, ToolSpec
 
 
 @dataclass(frozen=True)
@@ -23,6 +23,7 @@ class ModelRequest:
     goal: str
     memories: list[MemoryRecord]
     tools: list[ToolSpec]
+    skills: list[SkillRecord] = field(default_factory=list)
     tool_results: list[dict[str, Any]] = field(default_factory=list)
 
 
@@ -52,6 +53,17 @@ class LiteLLMModelClient:
             for tool in request.tools
         )
         memory_text = "\n".join(f"- {memory.text}" for memory in request.memories) or "- none"
+        skill_text = (
+            "\n".join(
+                (
+                    f"- {skill.name}: {skill.description}\n"
+                    f"  Instructions: {skill.instructions}\n"
+                    f"  Preferred tools: {', '.join(skill.tool_names) or 'none'}"
+                )
+                for skill in request.skills
+            )
+            or "- none"
+        )
         tool_results_text = (
             json.dumps(request.tool_results, indent=2) if request.tool_results else "none yet"
         )
@@ -75,14 +87,16 @@ class LiteLLMModelClient:
             "are unavailable, include a JSON block named tool_calls with objects "
             "containing name and arguments. For filesystem tools, use exact paths "
             "beneath the allowed roots shown in the tool descriptions. On Windows, "
-            "use drive-letter paths such as F:\\folder\\file.md, not /mnt/f/ paths."
+            "use drive-letter paths such as F:\\folder\\file.md, not /mnt/f/ paths. "
+            "When relevant skills are provided, follow their instructions."
         )
         if request.tool_results:
             system_prompt = (
                 "You are Mnemosyne Core's research assistant. Use Markdown for final "
-                "answers. Synthesize only from the provided tool results and relevant "
-                "memory. Include Markdown links to source URLs. Do not include "
-                "tool_calls, XML, JSON tool requests, or requests for more searching."
+                "answers. Synthesize only from the provided tool results, relevant "
+                "memory, and relevant skills. Include Markdown links to source URLs. "
+                "Do not include tool_calls, XML, JSON tool requests, or requests for "
+                "more searching."
             )
         response = await acompletion(
             model=self.settings.litellm_model,
@@ -95,6 +109,7 @@ class LiteLLMModelClient:
                     "role": "user",
                     "content": (
                         f"Goal: {request.goal}\n\nRelevant memory:\n{memory_text}\n\n"
+                        f"Relevant skills:\n{skill_text}\n\n"
                         f"Available safe tools:\n{tool_catalog}\n\n"
                         f"Tool results already collected:\n{tool_results_text}\n\n"
                         "When tool results are present, synthesize the answer from them and "

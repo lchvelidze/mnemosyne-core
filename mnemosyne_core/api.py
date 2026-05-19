@@ -29,6 +29,15 @@ class MemoryRequest(BaseModel):
     importance: float = Field(default=0.5, ge=0, le=1)
 
 
+class SkillRequest(BaseModel):
+    name: str = Field(min_length=1)
+    description: str = Field(min_length=1)
+    instructions: str = Field(min_length=1)
+    trigger_terms: list[str] = Field(default_factory=list)
+    tool_names: list[str] = Field(default_factory=list)
+    enabled: bool = True
+
+
 def create_app(runtime: AgentRuntime, *, run_inline: bool = False) -> FastAPI:
     app = FastAPI(title="Mnemosyne Core", version="0.1.0")
     app.state.runtime = runtime
@@ -157,6 +166,50 @@ def create_app(runtime: AgentRuntime, *, run_inline: bool = False) -> FastAPI:
             raise HTTPException(status_code=404, detail="Memory not found")
         return Response(status_code=204)
 
+    @app.get("/skills")
+    def list_skills(query: str | None = None, enabled_only: bool = False) -> list[dict]:
+        skills = _skill_store(runtime).search(query, limit=25) if query else _skill_store(
+            runtime
+        ).list(enabled_only=enabled_only)
+        return [skill.to_dict() for skill in skills]
+
+    @app.post("/skills", status_code=201)
+    def create_skill(payload: SkillRequest) -> dict:
+        try:
+            return _skill_store(runtime).create(
+                name=payload.name,
+                description=payload.description,
+                instructions=payload.instructions,
+                trigger_terms=payload.trigger_terms,
+                tool_names=payload.tool_names,
+                enabled=payload.enabled,
+            ).to_dict()
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.put("/skills/{skill_id}")
+    def update_skill(skill_id: str, payload: SkillRequest) -> dict:
+        if runtime.db.get_skill(skill_id) is None:
+            raise HTTPException(status_code=404, detail="Skill not found")
+        try:
+            return _skill_store(runtime).update(
+                skill_id,
+                name=payload.name,
+                description=payload.description,
+                instructions=payload.instructions,
+                trigger_terms=payload.trigger_terms,
+                tool_names=payload.tool_names,
+                enabled=payload.enabled,
+            ).to_dict()
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.delete("/skills/{skill_id}", status_code=204)
+    def delete_skill(skill_id: str) -> Response:
+        if not runtime.db.delete_skill(skill_id):
+            raise HTTPException(status_code=404, detail="Skill not found")
+        return Response(status_code=204)
+
     @app.get("/health")
     def health() -> dict[str, str]:
         db_status = "ok" if runtime.db.path.exists() else "missing"
@@ -164,6 +217,12 @@ def create_app(runtime: AgentRuntime, *, run_inline: bool = False) -> FastAPI:
         return {"database": db_status, "model": model_status}
 
     return app
+
+
+def _skill_store(runtime: AgentRuntime):
+    if runtime.skills is None:
+        raise HTTPException(status_code=503, detail="Skills are not configured")
+    return runtime.skills
 
 
 async def _continue_existing_run(runtime: AgentRuntime, run_id: str, goal: str) -> None:

@@ -133,6 +133,7 @@ async def test_agent_run_records_ordered_events_memory_tool_and_eval(tmp_path: P
         "run.created",
         "plan.created",
         "memory.retrieved",
+        "skills.retrieved",
         "model.started",
         "model.completed",
         "tool.started",
