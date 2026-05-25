@@ -33,3 +33,7 @@ Mnemosyne skills are local reusable instructions for repeatable agent workflows.
 - `DELETE /skills/{skill_id}`
 
 The agent also has safe skill tools: `create_skill` and `list_skills`.
+
+## Full User Guide
+
+See [docs/USER_GUIDE.md](docs/USER_GUIDE.md) for the current architecture, startup commands, API examples, dashboard workflows, tool catalog, skills, memory, sandboxes, terminal/WSL usage, and troubleshooting notes.
