@@ -66,6 +66,17 @@ export type ToolSpec = {
   permission_category: string;
 };
 
+export type ToolExecutionResult = {
+  tool_name: string;
+  arguments: Record<string, unknown>;
+  status: "completed" | "failed";
+  duration_ms: number;
+  result?: Record<string, unknown>;
+  error?: string;
+  permission_category: string;
+  requires_confirmation: boolean;
+};
+
 export type CreateRunOptions = {
   constraints?: string;
   allowed_tools?: string[];
@@ -146,5 +157,43 @@ export function createSkill(payload: {
   return request<SkillRecord>("/skills", {
     method: "POST",
     body: JSON.stringify(payload),
+  });
+}
+
+export function updateSkill(
+  skillId: string,
+  payload: {
+    name: string;
+    description: string;
+    instructions: string;
+    trigger_terms: string[];
+    tool_names: string[];
+    enabled: boolean;
+  },
+) {
+  return request<SkillRecord>(`/skills/${skillId}`, {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function deleteSkill(skillId: string) {
+  return fetch(`${API_BASE}/skills/${skillId}`, { method: "DELETE" }).then((response) => {
+    if (!response.ok) {
+      return response.text().then((text) => {
+        throw new Error(text || `Request failed: ${response.status}`);
+      });
+    }
+  });
+}
+
+export function executeTool(
+  toolName: string,
+  argumentsPayload: Record<string, unknown>,
+  confirmRisk: boolean,
+) {
+  return request<ToolExecutionResult>(`/tools/${toolName}/execute`, {
+    method: "POST",
+    body: JSON.stringify({ arguments: argumentsPayload, confirm_risk: confirmRisk }),
   });
 }

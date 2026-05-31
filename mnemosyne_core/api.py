@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from collections.abc import AsyncIterator
+from typing import Any
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -36,6 +38,11 @@ class SkillRequest(BaseModel):
     trigger_terms: list[str] = Field(default_factory=list)
     tool_names: list[str] = Field(default_factory=list)
     enabled: bool = True
+
+
+class ToolExecuteRequest(BaseModel):
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    confirm_risk: bool = False
 
 
 def create_app(runtime: AgentRuntime, *, run_inline: bool = False) -> FastAPI:
@@ -115,6 +122,43 @@ def create_app(runtime: AgentRuntime, *, run_inline: bool = False) -> FastAPI:
     @app.get("/tools")
     def list_tools() -> list[dict]:
         return [tool.to_dict() for tool in runtime.tools.specs()]
+
+    @app.post("/tools/{tool_name}/execute")
+    def execute_tool(tool_name: str, payload: ToolExecuteRequest) -> dict:
+        spec = _tool_spec(runtime, tool_name)
+        requires_confirmation = _tool_requires_confirmation(spec.permission_category)
+        if requires_confirmation and not payload.confirm_risk:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Tool '{tool_name}' requires confirmation because it has "
+                    f"'{spec.permission_category}' permissions."
+                ),
+            )
+        started = time.perf_counter()
+        try:
+            result = runtime.tools.execute(tool_name, payload.arguments)
+        except Exception as exc:
+            duration_ms = int((time.perf_counter() - started) * 1000)
+            return {
+                "tool_name": tool_name,
+                "arguments": payload.arguments,
+                "status": "failed",
+                "duration_ms": duration_ms,
+                "error": str(exc),
+                "permission_category": spec.permission_category,
+                "requires_confirmation": requires_confirmation,
+            }
+        duration_ms = int((time.perf_counter() - started) * 1000)
+        return {
+            "tool_name": tool_name,
+            "arguments": payload.arguments,
+            "status": "completed",
+            "duration_ms": duration_ms,
+            "result": result,
+            "permission_category": spec.permission_category,
+            "requires_confirmation": requires_confirmation,
+        }
 
     @app.get("/runs/{run_id}/events")
     async def stream_events(run_id: str) -> StreamingResponse:
@@ -223,6 +267,18 @@ def _skill_store(runtime: AgentRuntime):
     if runtime.skills is None:
         raise HTTPException(status_code=503, detail="Skills are not configured")
     return runtime.skills
+
+
+def _tool_spec(runtime: AgentRuntime, tool_name: str):
+    for spec in runtime.tools.specs():
+        if spec.name == tool_name:
+            return spec
+    raise HTTPException(status_code=404, detail=f"Unknown tool: {tool_name}")
+
+
+def _tool_requires_confirmation(permission_category: str) -> bool:
+    risky_terms = ("write", "modify", "terminal", "elevated")
+    return any(term in permission_category for term in risky_terms)
 
 
 async def _continue_existing_run(runtime: AgentRuntime, run_id: str, goal: str) -> None:

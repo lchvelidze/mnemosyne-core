@@ -32,6 +32,7 @@ describe("Run Console", () => {
   beforeEach(() => {
     MockEventSource.instances = [];
     vi.stubGlobal("EventSource", MockEventSource);
+    vi.stubGlobal("confirm", vi.fn(() => true));
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -102,6 +103,23 @@ describe("Run Console", () => {
             updated_at: "2026-05-08T12:00:00Z",
           });
         }
+        if (url.endsWith("/skills/skill-1") && init?.method === "PUT") {
+          const body = JSON.parse(String(init.body));
+          return Response.json({
+            id: "skill-1",
+            name: body.name.toLowerCase().replaceAll(" ", "_"),
+            description: body.description,
+            instructions: body.instructions,
+            trigger_terms: body.trigger_terms,
+            tool_names: body.tool_names,
+            enabled: body.enabled,
+            created_at: "2026-05-08T12:00:00Z",
+            updated_at: "2026-05-08T12:10:00Z",
+          });
+        }
+        if (url.endsWith("/skills/skill-1") && init?.method === "DELETE") {
+          return new Response(null, { status: 204 });
+        }
         if (url.endsWith("/skills")) {
           return Response.json([
             {
@@ -116,6 +134,17 @@ describe("Run Console", () => {
               updated_at: "2026-05-08T12:00:00Z",
             },
           ]);
+        }
+        if (url.endsWith("/tools/calculator/execute") && init?.method === "POST") {
+          return Response.json({
+            tool_name: "calculator",
+            arguments: JSON.parse(String(init.body)).arguments,
+            status: "completed",
+            duration_ms: 2,
+            result: { result: 4 },
+            permission_category: "compute.safe",
+            requires_confirmation: false,
+          });
         }
         if (url.endsWith("/runs/run-1/retry")) {
           return Response.json({ id: "run-3", status: "running", goal: "research battery safety" });
@@ -308,6 +337,7 @@ describe("Run Console", () => {
       "Use openclaw infer model run --prompt for one-shot replies.",
     );
     await userEvent.type(screen.getByLabelText(/trigger terms/i), "openclaw, model run");
+    await userEvent.type(screen.getByLabelText(/preferred tools/i), "run_terminal_command");
     await userEvent.click(screen.getByRole("button", { name: /add skill/i }));
 
     await waitFor(() => {
@@ -317,9 +347,60 @@ describe("Run Console", () => {
       expect(createCall).toBeDefined();
       const body = JSON.parse(String(createCall?.[1]?.body));
       expect(body.trigger_terms).toEqual(["openclaw", "model run"]);
-      expect(body.tool_names).toEqual(["calculator", "web_search", "run_elevated_wsl_command"]);
+      expect(body.tool_names).toEqual(["run_terminal_command"]);
     });
     expect(await screen.findByText("openclaw_model_run")).toBeInTheDocument();
+  });
+
+  it("edits and deletes reusable skills from the skill manager", async () => {
+    const fetchMock = vi.mocked(fetch);
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /edit/i }));
+    await userEvent.clear(screen.getByLabelText(/description/i));
+    await userEvent.type(screen.getByLabelText(/description/i), "Run OpenClaw with the correct model command.");
+    await userEvent.clear(screen.getByLabelText(/preferred tools/i));
+    await userEvent.type(screen.getByLabelText(/preferred tools/i), "run_terminal_command");
+    await userEvent.click(screen.getByRole("button", { name: /update skill/i }));
+
+    await waitFor(() => {
+      const updateCall = fetchMock.mock.calls.find(
+        ([url, init]) => String(url).endsWith("/skills/skill-1") && init?.method === "PUT",
+      );
+      expect(updateCall).toBeDefined();
+      const body = JSON.parse(String(updateCall?.[1]?.body));
+      expect(body.description).toBe("Run OpenClaw with the correct model command.");
+      expect(body.tool_names).toEqual(["run_terminal_command"]);
+    });
+
+    await userEvent.click(screen.getByRole("button", { name: /delete/i }));
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("/skills/skill-1"), {
+        method: "DELETE",
+      }),
+    );
+  });
+
+  it("runs a direct tool execution from the inspection panel", async () => {
+    const fetchMock = vi.mocked(fetch);
+    render(<App />);
+
+    const argumentsInput = await screen.findByLabelText(/arguments json/i);
+    await userEvent.clear(argumentsInput);
+    await userEvent.click(argumentsInput);
+    await userEvent.paste('{"expression":"2 + 2"}');
+    await userEvent.click(screen.getByRole("button", { name: /run tool/i }));
+
+    await waitFor(() => {
+      const executeCall = fetchMock.mock.calls.find(
+        ([url, init]) => String(url).endsWith("/tools/calculator/execute") && init?.method === "POST",
+      );
+      expect(executeCall).toBeDefined();
+      const body = JSON.parse(String(executeCall?.[1]?.body));
+      expect(body.arguments).toEqual({ expression: "2 + 2" });
+      expect(body.confirm_risk).toBe(false);
+    });
+    expect(await screen.findByText(/"status": "completed"/i)).toBeInTheDocument();
   });
 
   it("shows allowed tools in a dropdown menu with elevated WSL visible", async () => {

@@ -20,6 +20,7 @@ body {
 
 button,
 input,
+select,
 textarea {
   font: inherit;
 }
@@ -550,7 +551,9 @@ pre {
 
 .run-actions button,
 .memory-form button,
-.skill-form button {
+.skill-form button,
+.tool-runner-form button,
+.item-actions button {
   min-height: 38px;
   border: 1px solid #c8d5cd;
   border-radius: 8px;
@@ -565,14 +568,18 @@ pre {
 
 .run-actions button:disabled,
 .memory-form button:disabled,
-.skill-form button:disabled {
+.skill-form button:disabled,
+.tool-runner-form button:disabled,
+.item-actions button:disabled {
   cursor: not-allowed;
   opacity: 0.55;
 }
 
 .run-actions svg,
 .memory-form svg,
-.skill-form svg {
+.skill-form svg,
+.tool-runner-form svg,
+.item-actions svg {
   width: 16px;
   height: 16px;
 }
@@ -605,14 +612,16 @@ pre {
 }
 
 .memory-form,
-.skill-form {
+.skill-form,
+.tool-runner-form {
   display: grid;
   gap: 8px;
   margin-bottom: 10px;
 }
 
 .memory-form label,
-.skill-form label {
+.skill-form label,
+.tool-runner-form label {
   font-weight: 800;
 }
 
@@ -621,8 +630,62 @@ pre {
   min-height: 64px;
 }
 
-.skill-form input {
+.tool-runner-form textarea {
+  min-height: 120px;
+  font-family: "Cascadia Mono", "Consolas", monospace;
+  font-size: 0.82rem;
+}
+
+.skill-form input,
+.tool-runner-form select {
   min-height: 38px;
+}
+
+.skill-form input,
+.tool-runner-form select {
+  width: 100%;
+  border: 1px solid #c8d5cd;
+  border-radius: 8px;
+  padding: 8px 10px;
+  color: #17201b;
+  background: #ffffff;
+}
+
+.checkbox-row {
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.checkbox-row input {
+  width: 16px;
+  height: 16px;
+}
+
+.form-actions,
+.item-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.form-actions button,
+.item-actions button {
+  padding: 0 12px;
+}
+
+.risk-note {
+  color: #66736b;
+  font-weight: 700;
+}
+
+.tool-runner-result {
+  max-height: 300px;
+  padding: 10px 12px;
+  border: 1px solid #d8e1da;
+  border-radius: 8px;
+  background: #ffffff;
 }
 
 .memory-list.compact,
@@ -711,6 +774,34 @@ pre {
 
 .skill-list span {
   margin-top: 4px;
+}
+
+.skill-item-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.state-chip {
+  border-radius: 999px;
+  padding: 4px 8px;
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.state-chip.enabled {
+  background: #dbece4;
+  color: #245448;
+}
+
+.state-chip.disabled {
+  background: #fff2ee;
+  color: #8b2f1b;
+}
+
+.skill-list .item-actions {
+  margin-top: 10px;
 }
 
 .eval-box {

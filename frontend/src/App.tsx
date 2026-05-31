@@ -5,15 +5,20 @@ import {
   ChevronDown,
   CheckCircle2,
   Copy,
+  FilePenLine,
   History,
   Plus,
   Play,
   RotateCcw,
+  Save,
   Search,
   ServerCrash,
   ShieldCheck,
   Square,
+  TerminalSquare,
+  Trash2,
   Wrench,
+  X,
 } from "lucide-react";
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
@@ -28,6 +33,8 @@ import {
   createMemory,
   createRun,
   createSkill,
+  deleteSkill,
+  executeTool,
   getRun,
   getRunEvents,
   getRunMemory,
@@ -36,6 +43,7 @@ import {
   listSkills,
   listTools,
   retryRun,
+  updateSkill,
 } from "./api";
 import { asPayloadText, cleanFinalAnswerForDisplay } from "./display";
 
@@ -66,6 +74,13 @@ export default function App() {
   const [newSkillDescription, setNewSkillDescription] = useState("");
   const [newSkillInstructions, setNewSkillInstructions] = useState("");
   const [newSkillTriggers, setNewSkillTriggers] = useState("");
+  const [newSkillTools, setNewSkillTools] = useState("");
+  const [newSkillEnabled, setNewSkillEnabled] = useState(true);
+  const [editingSkillId, setEditingSkillId] = useState<string | null>(null);
+  const [toolExecutionTool, setToolExecutionTool] = useState("");
+  const [toolExecutionArguments, setToolExecutionArguments] = useState("{}");
+  const [toolExecutionResult, setToolExecutionResult] = useState<Record<string, unknown> | null>(null);
+  const [isExecutingTool, setIsExecutingTool] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isCreating, setIsCreating] = useState(false);
   const eventSourceRef = useRef<EventSource | null>(null);
@@ -118,6 +133,7 @@ export default function App() {
     ]);
     setTools(toolCatalog);
     setSelectedTools(toolCatalog.map((tool) => tool.name));
+    setToolExecutionTool(toolCatalog.find((tool) => tool.name === "calculator")?.name ?? toolCatalog[0]?.name ?? "");
     setAllMemories(memoryRecords);
     setSkills(skillRecords);
     setRuns(history);
@@ -249,7 +265,7 @@ export default function App() {
     }
   }
 
-  async function handleAddSkill(event: FormEvent<HTMLFormElement>) {
+  async function handleSaveSkill(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const name = newSkillName.trim();
     const description = newSkillDescription.trim();
@@ -257,21 +273,92 @@ export default function App() {
     if (!name || !description || !instructions) return;
     setError(null);
     try {
-      const created = await createSkill({
+      const payload = {
         name,
         description,
         instructions,
         trigger_terms: splitCommaList(newSkillTriggers),
-        tool_names: selectedTools,
-        enabled: true,
-      });
-      setSkills((current) => [created, ...current]);
-      setNewSkillName("");
-      setNewSkillDescription("");
-      setNewSkillInstructions("");
-      setNewSkillTriggers("");
+        tool_names: splitCommaList(newSkillTools),
+        enabled: newSkillEnabled,
+      };
+      if (editingSkillId) {
+        const updated = await updateSkill(editingSkillId, payload);
+        setSkills((current) => current.map((skill) => (skill.id === updated.id ? updated : skill)));
+      } else {
+        const created = await createSkill(payload);
+        setSkills((current) => [created, ...current]);
+      }
+      resetSkillForm();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
+    }
+  }
+
+  function handleEditSkill(skill: SkillRecord) {
+    setEditingSkillId(skill.id);
+    setNewSkillName(skill.name);
+    setNewSkillDescription(skill.description);
+    setNewSkillInstructions(skill.instructions);
+    setNewSkillTriggers(skill.trigger_terms.join(", "));
+    setNewSkillTools(skill.tool_names.join(", "));
+    setNewSkillEnabled(skill.enabled);
+  }
+
+  async function handleDeleteSkill(skill: SkillRecord) {
+    const confirmed = window.confirm(`Delete skill "${skill.name}"?`);
+    if (!confirmed) return;
+    setError(null);
+    try {
+      await deleteSkill(skill.id);
+      setSkills((current) => current.filter((item) => item.id !== skill.id));
+      if (editingSkillId === skill.id) resetSkillForm();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    }
+  }
+
+  function resetSkillForm() {
+    setEditingSkillId(null);
+    setNewSkillName("");
+    setNewSkillDescription("");
+    setNewSkillInstructions("");
+    setNewSkillTriggers("");
+    setNewSkillTools("");
+    setNewSkillEnabled(true);
+  }
+
+  async function handleExecuteTool(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const selectedTool = tools.find((tool) => tool.name === toolExecutionTool);
+    if (!selectedTool) return;
+    setError(null);
+    setToolExecutionResult(null);
+    let parsedArguments: Record<string, unknown>;
+    try {
+      const parsed = JSON.parse(toolExecutionArguments || "{}") as unknown;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new Error("Tool arguments must be a JSON object.");
+      }
+      parsedArguments = parsed as Record<string, unknown>;
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Tool arguments must be valid JSON.");
+      return;
+    }
+    const risky = requiresToolConfirmation(selectedTool.permission_category);
+    if (risky) {
+      const confirmed = window.confirm(
+        `Run ${selectedTool.name} with ${selectedTool.permission_category} permissions?`,
+      );
+      if (!confirmed) return;
+    }
+    setIsExecutingTool(true);
+    try {
+      const result = await executeTool(selectedTool.name, parsedArguments, risky);
+      setToolExecutionResult(result as unknown as Record<string, unknown>);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setIsExecutingTool(false);
     }
   }
 
@@ -512,6 +599,48 @@ export default function App() {
               </div>
 
               <div className="inspection-block">
+                <h3>Tool Runner</h3>
+                <form className="tool-runner-form" onSubmit={(event) => void handleExecuteTool(event)}>
+                  <label htmlFor="tool-execution-tool">Tool</label>
+                  <select
+                    id="tool-execution-tool"
+                    onChange={(event) => setToolExecutionTool(event.target.value)}
+                    value={toolExecutionTool}
+                  >
+                    {tools.map((tool) => (
+                      <option key={tool.name} value={tool.name}>
+                        {tool.name} ({tool.permission_category})
+                      </option>
+                    ))}
+                  </select>
+                  <label htmlFor="tool-execution-arguments">Arguments JSON</label>
+                  <textarea
+                    id="tool-execution-arguments"
+                    onChange={(event) => setToolExecutionArguments(event.target.value)}
+                    rows={5}
+                    spellCheck={false}
+                    value={toolExecutionArguments}
+                  />
+                  {tools.find((tool) => tool.name === toolExecutionTool)?.permission_category ? (
+                    <small className="risk-note">
+                      {requiresToolConfirmation(
+                        tools.find((tool) => tool.name === toolExecutionTool)?.permission_category ?? "",
+                      )
+                        ? "Confirmation required before this tool runs."
+                        : "This tool can run without extra confirmation."}
+                    </small>
+                  ) : null}
+                  <button disabled={!toolExecutionTool || isExecutingTool} type="submit">
+                    <TerminalSquare aria-hidden="true" />
+                    <span>{isExecutingTool ? "Running" : "Run Tool"}</span>
+                  </button>
+                </form>
+                {toolExecutionResult ? (
+                  <pre className="tool-runner-result">{JSON.stringify(toolExecutionResult, null, 2)}</pre>
+                ) : null}
+              </div>
+
+              <div className="inspection-block">
                 <h3>Memory Manager</h3>
                 <form className="memory-form" onSubmit={(event) => void handleAddMemory(event)}>
                   <label htmlFor="new-memory">New memory</label>
@@ -538,7 +667,7 @@ export default function App() {
 
               <div className="inspection-block">
                 <h3>Skill Manager</h3>
-                <form className="skill-form" onSubmit={(event) => void handleAddSkill(event)}>
+                <form className="skill-form" onSubmit={(event) => void handleSaveSkill(event)}>
                   <label htmlFor="new-skill-name">Skill name</label>
                   <input
                     id="new-skill-name"
@@ -565,17 +694,60 @@ export default function App() {
                     placeholder="openclaw, model run"
                     value={newSkillTriggers}
                   />
-                  <button disabled={!newSkillName.trim() || !newSkillDescription.trim() || !newSkillInstructions.trim()} type="submit">
-                    <Plus aria-hidden="true" />
-                    <span>Add Skill</span>
-                  </button>
+                  <label htmlFor="new-skill-tools">Preferred tools</label>
+                  <input
+                    id="new-skill-tools"
+                    onChange={(event) => setNewSkillTools(event.target.value)}
+                    placeholder="run_terminal_command, web_search"
+                    value={newSkillTools}
+                  />
+                  <label className="checkbox-row" htmlFor="new-skill-enabled">
+                    <input
+                      checked={newSkillEnabled}
+                      id="new-skill-enabled"
+                      onChange={(event) => setNewSkillEnabled(event.target.checked)}
+                      type="checkbox"
+                    />
+                    <span>Enabled</span>
+                  </label>
+                  <div className="form-actions">
+                    <button
+                      disabled={!newSkillName.trim() || !newSkillDescription.trim() || !newSkillInstructions.trim()}
+                      type="submit"
+                    >
+                      {editingSkillId ? <Save aria-hidden="true" /> : <Plus aria-hidden="true" />}
+                      <span>{editingSkillId ? "Update Skill" : "Add Skill"}</span>
+                    </button>
+                    {editingSkillId ? (
+                      <button onClick={resetSkillForm} type="button">
+                        <X aria-hidden="true" />
+                        <span>Cancel</span>
+                      </button>
+                    ) : null}
+                  </div>
                 </form>
                 <ul className="skill-list compact">
-                  {skills.slice(0, 5).map((skill) => (
+                  {skills.slice(0, 8).map((skill) => (
                     <li key={skill.id}>
-                      <strong>{skill.name}</strong>
+                      <div className="skill-item-head">
+                        <strong>{skill.name}</strong>
+                        <span className={skill.enabled ? "state-chip enabled" : "state-chip disabled"}>
+                          {skill.enabled ? "Enabled" : "Disabled"}
+                        </span>
+                      </div>
                       <span>{skill.description}</span>
-                      <small>{skill.trigger_terms.join(", ") || "manual"}</small>
+                      <small>Triggers: {skill.trigger_terms.join(", ") || "manual"}</small>
+                      <small>Tools: {skill.tool_names.join(", ") || "none"}</small>
+                      <div className="item-actions">
+                        <button onClick={() => handleEditSkill(skill)} type="button">
+                          <FilePenLine aria-hidden="true" />
+                          <span>Edit</span>
+                        </button>
+                        <button onClick={() => void handleDeleteSkill(skill)} type="button">
+                          <Trash2 aria-hidden="true" />
+                          <span>Delete</span>
+                        </button>
+                      </div>
                     </li>
                   ))}
                 </ul>
@@ -608,4 +780,10 @@ function splitCommaList(value: string) {
     .split(",")
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function requiresToolConfirmation(permissionCategory: string) {
+  return ["write", "modify", "terminal", "elevated"].some((term) =>
+    permissionCategory.includes(term),
+  );
 }

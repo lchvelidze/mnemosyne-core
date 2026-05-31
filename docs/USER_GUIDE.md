@@ -228,7 +228,11 @@ Memory is stored in SQLite and indexed with FTS5. Future runs retrieve relevant 
    - Description
    - Instructions
    - Trigger terms
+   - Preferred tools
+   - Enabled/disabled state
 3. Click **Add Skill**.
+
+Existing skills can be edited or deleted directly from the Skill Manager list. Editing loads the skill into the form; deleting asks for browser confirmation first.
 
 Skills are stored in SQLite and indexed with FTS5. Future runs retrieve relevant skills automatically and send them to the model as instruction context.
 
@@ -329,6 +333,38 @@ PowerShell:
 ```powershell
 Invoke-RestMethod -Uri "http://127.0.0.1:8002/tools"
 ```
+
+### Execute A Tool Directly
+
+```http
+POST /tools/{tool_name}/execute
+```
+
+Body:
+
+```json
+{
+  "arguments": { "expression": "2 + 2" },
+  "confirm_risk": false
+}
+```
+
+PowerShell:
+
+```powershell
+$body = @{
+  arguments = @{ expression = "2 + 2" }
+  confirm_risk = $false
+} | ConvertTo-Json -Depth 5
+
+Invoke-RestMethod `
+  -Uri "http://127.0.0.1:8002/tools/calculator/execute" `
+  -Method Post `
+  -ContentType "application/json" `
+  -Body $body
+```
+
+Tools with write, terminal, modify, or elevated permission categories require `"confirm_risk": true`. The dashboard Tool Runner prompts before sending that confirmation.
 
 ### Create Run
 
@@ -484,7 +520,7 @@ DELETE /skills/{skill_id}
 
 ## Tool Catalog
 
-Tools are not exposed through a direct `/tools/{name}/execute` endpoint. They are available to the agent during runs. The model can request tool calls, and the backend executes them only if the run contract allows that tool.
+Tools are available to the agent during runs and to trusted local users through the dashboard Tool Runner or `POST /tools/{tool_name}/execute`. The model can request tool calls only if the run contract allows that tool. Direct manual execution is intended for local testing and requires confirmation for write/terminal/elevated categories.
 
 ### `read_text_file`
 
@@ -1118,10 +1154,7 @@ For WSL terminal working directories, use WSL paths:
 
 ## Recommended Next Upgrades
 
-- Add direct admin UI for editing/deleting skills.
-- Add direct tool execution panel for trusted local testing.
 - Add process/job manager for long-running terminal commands.
-- Add per-tool confirmation prompts for risky terminal actions.
 - Add richer eval rubrics.
 - Add vector retrieval while keeping SQLite FTS as fallback.
 - Add export/import for memory and skills.

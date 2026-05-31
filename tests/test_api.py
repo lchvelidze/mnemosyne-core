@@ -104,6 +104,35 @@ def test_tool_catalog_exposes_safe_tool_permissions(tmp_path: Path) -> None:
     assert {tool["name"] for tool in tools} >= {"create_skill", "list_skills"}
 
 
+def test_direct_tool_execution_requires_confirmation_for_risky_tools(tmp_path: Path) -> None:
+    client = build_client(tmp_path)
+
+    calculation = client.post(
+        "/tools/calculator/execute",
+        json={"arguments": {"expression": "2 + 3"}, "confirm_risk": False},
+    ).json()
+    blocked = client.post(
+        "/tools/write_text_file/execute",
+        json={
+            "arguments": {"path": str(tmp_path / "note.md"), "text": "hello"},
+            "confirm_risk": False,
+        },
+    )
+    written = client.post(
+        "/tools/write_text_file/execute",
+        json={
+            "arguments": {"path": str(tmp_path / "note.md"), "text": "hello"},
+            "confirm_risk": True,
+        },
+    ).json()
+
+    assert calculation["status"] == "completed"
+    assert calculation["result"]["result"] == 5
+    assert blocked.status_code == 409
+    assert written["status"] == "completed"
+    assert (tmp_path / "note.md").read_text() == "hello"
+
+
 def test_memory_crud_endpoints_manage_searchable_memory(tmp_path: Path) -> None:
     client = build_client(tmp_path)
 
