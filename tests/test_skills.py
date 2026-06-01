@@ -42,6 +42,23 @@ def test_vector_skill_search_finds_related_terms_without_exact_fts_match(tmp_pat
     assert results[0].id == created.id
 
 
+def test_skill_search_treats_fts_operator_words_as_text(tmp_path: Path) -> None:
+    db = Database(tmp_path / "mnemosyne.db")
+    db.initialize()
+    skills = SkillStore(db)
+
+    created = skills.create(
+        name="Indeed Job Detail Collector",
+        description="Collect job URLs and details from individual listing pages.",
+        instructions="Open each listing and capture its dedicated detail URL.",
+        trigger_terms=["indeed", "devops"],
+        tool_names=["web_search"],
+    )
+    results = skills.search("Indeed DevOps AND details")
+
+    assert results[0].id == created.id
+
+
 def test_tool_registry_can_create_and_list_skills(tmp_path: Path) -> None:
     db = Database(tmp_path / "mnemosyne.db")
     db.initialize()

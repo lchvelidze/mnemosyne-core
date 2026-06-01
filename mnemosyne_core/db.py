@@ -1064,7 +1064,7 @@ class Database:
     def _fts_query(query: str) -> str:
         terms = ["".join(ch for ch in part if ch.isalnum()) for part in query.split()]
         terms = [term for term in terms if term]
-        return " OR ".join(terms)
+        return " OR ".join(f'"{term}"' for term in terms)
 
     def _run_from_row(self, row: sqlite3.Row) -> AgentRun:
         contract_row = self._contract_row(row["id"])

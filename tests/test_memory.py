@@ -28,3 +28,18 @@ def test_vector_memory_search_falls_back_beyond_exact_fts_terms(tmp_path: Path) 
     results = memory.search("lithium iron phosphate storage risk", limit=3)
 
     assert results[0].text == "Solar battery research prefers LFP chemistry for safety."
+
+
+def test_memory_search_treats_fts_operator_words_as_text(tmp_path: Path) -> None:
+    db = Database(tmp_path / "mnemosyne.db")
+    db.initialize()
+    memory = MemoryStore(db)
+    expected = "Indeed DevOps Engineer details should be checked one listing at a time."
+    memory.add(expected, source="seed")
+
+    results = memory.search(
+        "find DevOps Engineer roles from Indeed.com AND inspect each details page",
+        limit=3,
+    )
+
+    assert results[0].text == expected
