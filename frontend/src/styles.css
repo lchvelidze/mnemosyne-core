@@ -553,6 +553,7 @@ pre {
 .memory-form button,
 .skill-form button,
 .tool-runner-form button,
+.terminal-job-form button,
 .item-actions button {
   min-height: 38px;
   border: 1px solid #c8d5cd;
@@ -570,6 +571,7 @@ pre {
 .memory-form button:disabled,
 .skill-form button:disabled,
 .tool-runner-form button:disabled,
+.terminal-job-form button:disabled,
 .item-actions button:disabled {
   cursor: not-allowed;
   opacity: 0.55;
@@ -579,6 +581,7 @@ pre {
 .memory-form svg,
 .skill-form svg,
 .tool-runner-form svg,
+.terminal-job-form svg,
 .item-actions svg {
   width: 16px;
   height: 16px;
@@ -613,7 +616,8 @@ pre {
 
 .memory-form,
 .skill-form,
-.tool-runner-form {
+.tool-runner-form,
+.terminal-job-form {
   display: grid;
   gap: 8px;
   margin-bottom: 10px;
@@ -621,7 +625,8 @@ pre {
 
 .memory-form label,
 .skill-form label,
-.tool-runner-form label {
+.tool-runner-form label,
+.terminal-job-form label {
   font-weight: 800;
 }
 
@@ -630,25 +635,41 @@ pre {
   min-height: 64px;
 }
 
-.tool-runner-form textarea {
+.tool-runner-form textarea,
+.terminal-job-form textarea {
   min-height: 120px;
   font-family: "Cascadia Mono", "Consolas", monospace;
   font-size: 0.82rem;
 }
 
 .skill-form input,
-.tool-runner-form select {
+.tool-runner-form select,
+.terminal-job-form input,
+.terminal-job-form select {
   min-height: 38px;
 }
 
 .skill-form input,
-.tool-runner-form select {
+.tool-runner-form select,
+.terminal-job-form input,
+.terminal-job-form select {
   width: 100%;
   border: 1px solid #c8d5cd;
   border-radius: 8px;
   padding: 8px 10px;
   color: #17201b;
   background: #ffffff;
+}
+
+.split-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.split-fields label {
+  display: grid;
+  gap: 6px;
 }
 
 .checkbox-row {
@@ -688,8 +709,49 @@ pre {
   background: #ffffff;
 }
 
+.terminal-log {
+  min-height: 180px;
+  max-height: 340px;
+  padding: 10px 12px;
+  border: 1px solid #d8e1da;
+  border-radius: 8px;
+  background: #111b17;
+  color: #e8f4ee;
+}
+
+.job-summary {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 10px;
+  padding: 10px 12px;
+  border: 1px solid #d8e1da;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.job-summary div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.job-summary strong {
+  text-transform: capitalize;
+}
+
+.job-summary span,
+.job-summary small {
+  overflow-wrap: anywhere;
+}
+
+.job-error {
+  color: #8b2f1b;
+}
+
 .memory-list.compact,
-.skill-list.compact {
+.skill-list.compact,
+.job-list.compact {
   max-height: 260px;
   overflow: auto;
 }
@@ -741,7 +803,8 @@ pre {
 }
 
 .memory-list,
-.skill-list {
+.skill-list,
+.job-list {
   list-style: none;
   padding: 0;
   margin: 0;
@@ -750,24 +813,51 @@ pre {
 }
 
 .memory-list li,
-.skill-list li {
+.skill-list li,
+.job-list li {
   border: 1px solid #d8e1da;
   border-radius: 8px;
+  background: #ffffff;
+}
+
+.memory-list li,
+.skill-list li {
+  padding: 10px 12px;
+}
+
+.job-list button {
+  width: 100%;
+  min-height: 58px;
+  border: 0;
+  border-radius: 8px;
+  display: grid;
+  gap: 3px;
   padding: 10px 12px;
   background: #ffffff;
+  color: #17201b;
+  text-align: left;
+}
+
+.job-list button:hover,
+.job-list button.selected {
+  background: #eef7f1;
 }
 
 .memory-list span,
 .memory-list small,
 .skill-list strong,
 .skill-list span,
-.skill-list small {
+.skill-list small,
+.job-list strong,
+.job-list span,
+.job-list small {
   display: block;
   overflow-wrap: anywhere;
 }
 
 .memory-list small,
-.skill-list small {
+.skill-list small,
+.job-list small {
   margin-top: 4px;
   color: #66736b;
 }
@@ -838,7 +928,8 @@ pre {
 @media (max-width: 900px) {
   .console-grid,
   .result-grid,
-  .goal-entry {
+  .goal-entry,
+  .split-fields {
     grid-template-columns: 1fr;
   }
 

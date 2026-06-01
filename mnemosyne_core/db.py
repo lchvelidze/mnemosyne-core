@@ -13,6 +13,8 @@ from mnemosyne_core.models import (
     RunEvent,
     SkillRecord,
     TaskContract,
+    TerminalJob,
+    TerminalJobLog,
     now_iso,
 )
 
@@ -97,6 +99,30 @@ class Database:
                     notes TEXT NOT NULL,
                     passed INTEGER NOT NULL,
                     created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS terminal_jobs (
+                    id TEXT PRIMARY KEY,
+                    shell TEXT NOT NULL,
+                    command TEXT NOT NULL,
+                    working_directory TEXT NOT NULL,
+                    shell_mode TEXT,
+                    status TEXT NOT NULL,
+                    pid INTEGER,
+                    exit_code INTEGER,
+                    error TEXT,
+                    created_at TEXT NOT NULL,
+                    started_at TEXT,
+                    completed_at TEXT,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS terminal_job_logs (
+                    id TEXT PRIMARY KEY,
+                    job_id TEXT NOT NULL REFERENCES terminal_jobs(id) ON DELETE CASCADE,
+                    sequence INTEGER NOT NULL,
+                    stream TEXT NOT NULL,
+                    text TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(job_id, sequence)
                 );
                 """
             )
@@ -533,6 +559,157 @@ class Database:
             row = conn.execute("SELECT * FROM eval_results WHERE run_id = ?", (run_id,)).fetchone()
         return self._eval_from_row(row) if row else None
 
+    def create_terminal_job(
+        self,
+        *,
+        shell: str,
+        command: str,
+        working_directory: str,
+        shell_mode: str | None,
+    ) -> TerminalJob:
+        timestamp = now_iso()
+        job = TerminalJob(
+            id=str(uuid.uuid4()),
+            shell=shell,
+            command=command,
+            working_directory=working_directory,
+            shell_mode=shell_mode,
+            status="starting",
+            pid=None,
+            exit_code=None,
+            error=None,
+            created_at=timestamp,
+            started_at=None,
+            completed_at=None,
+            updated_at=timestamp,
+        )
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO terminal_jobs
+                (id, shell, command, working_directory, shell_mode, status, pid, exit_code,
+                 error, created_at, started_at, completed_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    job.id,
+                    job.shell,
+                    job.command,
+                    job.working_directory,
+                    job.shell_mode,
+                    job.status,
+                    job.pid,
+                    job.exit_code,
+                    job.error,
+                    job.created_at,
+                    job.started_at,
+                    job.completed_at,
+                    job.updated_at,
+                ),
+            )
+        return job
+
+    def update_terminal_job(
+        self,
+        job_id: str,
+        *,
+        status: str,
+        pid: int | None = None,
+        exit_code: int | None = None,
+        error: str | None = None,
+        started_at: str | None = None,
+        completed_at: str | None = None,
+    ) -> TerminalJob:
+        timestamp = now_iso()
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE terminal_jobs
+                SET status = ?, pid = COALESCE(?, pid), exit_code = ?, error = ?,
+                    started_at = COALESCE(?, started_at),
+                    completed_at = COALESCE(?, completed_at),
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (status, pid, exit_code, error, started_at, completed_at, timestamp, job_id),
+            )
+        job = self.get_terminal_job(job_id)
+        if job is None:
+            raise ValueError(f"Terminal job not found: {job_id}")
+        return job
+
+    def get_terminal_job(self, job_id: str) -> TerminalJob | None:
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM terminal_jobs WHERE id = ?", (job_id,)).fetchone()
+        return self._terminal_job_from_row(row) if row else None
+
+    def list_terminal_jobs(self, limit: int = 25) -> list[TerminalJob]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM terminal_jobs ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [self._terminal_job_from_row(row) for row in rows]
+
+    def mark_unattached_terminal_jobs_failed(self) -> None:
+        timestamp = now_iso()
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE terminal_jobs
+                SET status = 'failed',
+                    error = 'Process was not attached after backend restart.',
+                    completed_at = COALESCE(completed_at, ?),
+                    updated_at = ?
+                WHERE status IN ('starting', 'running', 'cancelling')
+                """,
+                (timestamp, timestamp),
+            )
+
+    def append_terminal_job_log(self, job_id: str, stream: str, text: str) -> TerminalJobLog:
+        with self.connect() as conn:
+            next_sequence = (
+                conn.execute(
+                    "SELECT COALESCE(MAX(sequence), 0) + 1 FROM terminal_job_logs WHERE job_id = ?",
+                    (job_id,),
+                ).fetchone()[0]
+            )
+            log = TerminalJobLog(
+                id=str(uuid.uuid4()),
+                job_id=job_id,
+                sequence=next_sequence,
+                stream=stream,
+                text=text,
+                created_at=now_iso(),
+            )
+            conn.execute(
+                """
+                INSERT INTO terminal_job_logs (id, job_id, sequence, stream, text, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (log.id, log.job_id, log.sequence, log.stream, log.text, log.created_at),
+            )
+        return log
+
+    def list_terminal_job_logs(
+        self,
+        job_id: str,
+        *,
+        after_sequence: int = 0,
+        limit: int = 500,
+    ) -> list[TerminalJobLog]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM terminal_job_logs
+                WHERE job_id = ? AND sequence > ?
+                ORDER BY sequence ASC
+                LIMIT ?
+                """,
+                (job_id, after_sequence, limit),
+            ).fetchall()
+        return [self._terminal_job_log_from_row(row) for row in rows]
+
     @staticmethod
     def _fts_query(query: str) -> str:
         terms = ["".join(ch for ch in part if ch.isalnum()) for part in query.split()]
@@ -603,6 +780,35 @@ class Database:
             enabled=bool(row["enabled"]),
             created_at=row["created_at"],
             updated_at=row["updated_at"],
+        )
+
+    @staticmethod
+    def _terminal_job_from_row(row: sqlite3.Row) -> TerminalJob:
+        return TerminalJob(
+            id=row["id"],
+            shell=row["shell"],
+            command=row["command"],
+            working_directory=row["working_directory"],
+            shell_mode=row["shell_mode"],
+            status=row["status"],
+            pid=row["pid"],
+            exit_code=row["exit_code"],
+            error=row["error"],
+            created_at=row["created_at"],
+            started_at=row["started_at"],
+            completed_at=row["completed_at"],
+            updated_at=row["updated_at"],
+        )
+
+    @staticmethod
+    def _terminal_job_log_from_row(row: sqlite3.Row) -> TerminalJobLog:
+        return TerminalJobLog(
+            id=row["id"],
+            job_id=row["job_id"],
+            sequence=row["sequence"],
+            stream=row["stream"],
+            text=row["text"],
+            created_at=row["created_at"],
         )
 
     @staticmethod

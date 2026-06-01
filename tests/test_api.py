@@ -1,4 +1,5 @@
 from pathlib import Path
+from time import sleep
 
 from fastapi.testclient import TestClient
 
@@ -6,6 +7,7 @@ from mnemosyne_core.agent import AgentRuntime
 from mnemosyne_core.api import create_app
 from mnemosyne_core.config import Settings
 from mnemosyne_core.db import Database
+from mnemosyne_core.jobs import TerminalJobManager
 from mnemosyne_core.memory import MemoryStore
 from mnemosyne_core.model_client import ModelRequest, ModelResponse, ToolCallRequest
 from mnemosyne_core.skills import SkillStore
@@ -31,10 +33,22 @@ def build_client(tmp_path: Path) -> TestClient:
     skills = SkillStore(db)
     memory.add("Research runs should show memory hits.", source="seed")
     registry = ToolRegistry.safe_defaults(
-        Settings(database_path=str(tmp_path / "mnemosyne.db"), allowed_file_roots=[str(tmp_path)]),
+        Settings(
+            database_path=str(tmp_path / "mnemosyne.db"),
+            allowed_file_roots=[str(tmp_path)],
+            terminal_enabled=True,
+        ),
         skills,
     )
-    runtime = AgentRuntime(db, memory, registry, StubModelClient(), skills)
+    jobs = TerminalJobManager(
+        Settings(
+            database_path=str(tmp_path / "mnemosyne.db"),
+            allowed_file_roots=[str(tmp_path)],
+            terminal_enabled=True,
+        ),
+        db,
+    )
+    runtime = AgentRuntime(db, memory, registry, StubModelClient(), skills, jobs)
     return TestClient(create_app(runtime, run_inline=True))
 
 
@@ -131,6 +145,44 @@ def test_direct_tool_execution_requires_confirmation_for_risky_tools(tmp_path: P
     assert blocked.status_code == 409
     assert written["status"] == "completed"
     assert (tmp_path / "note.md").read_text() == "hello"
+
+
+def test_terminal_jobs_persist_logs_and_status(tmp_path: Path) -> None:
+    client = build_client(tmp_path)
+
+    blocked = client.post(
+        "/terminal/jobs",
+        json={
+            "shell": "powershell",
+            "command": "Write-Output hello",
+            "working_directory": str(tmp_path),
+            "confirm_risk": False,
+        },
+    )
+    created = client.post(
+        "/terminal/jobs",
+        json={
+            "shell": "powershell",
+            "command": "Write-Output hello",
+            "working_directory": str(tmp_path),
+            "confirm_risk": True,
+        },
+    ).json()
+    job_id = created["id"]
+
+    assert blocked.status_code == 409
+    for _ in range(30):
+        current = client.get(f"/terminal/jobs/{job_id}").json()
+        if current["status"] in {"completed", "failed", "cancelled"}:
+            break
+        sleep(0.1)
+    logs = client.get(f"/terminal/jobs/{job_id}/logs").json()
+    listed = client.get("/terminal/jobs").json()
+
+    assert current["status"] == "completed"
+    assert current["exit_code"] == 0
+    assert any(log["stream"] == "stdout" and "hello" in log["text"] for log in logs)
+    assert listed[0]["id"] == job_id
 
 
 def test_memory_crud_endpoints_manage_searchable_memory(tmp_path: Path) -> None:

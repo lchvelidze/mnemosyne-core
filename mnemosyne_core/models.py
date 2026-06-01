@@ -151,6 +151,60 @@ class ToolCall:
 
 
 @dataclass(frozen=True)
+class TerminalJob:
+    id: str
+    shell: str
+    command: str
+    working_directory: str
+    shell_mode: str | None
+    status: str
+    pid: int | None
+    exit_code: int | None
+    error: str | None
+    created_at: str
+    started_at: str | None
+    completed_at: str | None
+    updated_at: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "shell": self.shell,
+            "command": self.command,
+            "working_directory": self.working_directory,
+            "shell_mode": self.shell_mode,
+            "status": self.status,
+            "pid": self.pid,
+            "exit_code": self.exit_code,
+            "error": self.error,
+            "created_at": self.created_at,
+            "started_at": self.started_at,
+            "completed_at": self.completed_at,
+            "updated_at": self.updated_at,
+        }
+
+
+@dataclass(frozen=True)
+class TerminalJobLog:
+    id: str
+    job_id: str
+    sequence: int
+    stream: str
+    text: str
+    created_at: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "job_id": self.job_id,
+            "sequence": self.sequence,
+            "stream": self.stream,
+            "text": self.text,
+            "created_at": self.created_at,
+        }
+
+
+@dataclass(frozen=True)
 class EvalResult:
     run_id: str
     score: float

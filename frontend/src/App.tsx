@@ -28,19 +28,26 @@ import {
   MemoryRecord,
   RunEvent,
   SkillRecord,
+  TerminalJob,
+  TerminalJobLog,
   ToolSpec,
   cancelRun,
+  cancelTerminalJob,
   createMemory,
   createRun,
   createSkill,
+  createTerminalJob,
   deleteSkill,
   executeTool,
   getRun,
   getRunEvents,
   getRunMemory,
+  getTerminalJob,
+  getTerminalJobLogs,
   listMemory,
   listRuns,
   listSkills,
+  listTerminalJobs,
   listTools,
   retryRun,
   updateSkill,
@@ -67,6 +74,9 @@ export default function App() {
   const [allMemories, setAllMemories] = useState<MemoryRecord[]>([]);
   const [skills, setSkills] = useState<SkillRecord[]>([]);
   const [tools, setTools] = useState<ToolSpec[]>([]);
+  const [terminalJobs, setTerminalJobs] = useState<TerminalJob[]>([]);
+  const [selectedTerminalJob, setSelectedTerminalJob] = useState<TerminalJob | null>(null);
+  const [terminalJobLogs, setTerminalJobLogs] = useState<TerminalJobLog[]>([]);
   const [selectedTools, setSelectedTools] = useState<string[]>([]);
   const [isToolMenuOpen, setIsToolMenuOpen] = useState(false);
   const [newMemory, setNewMemory] = useState("");
@@ -81,9 +91,15 @@ export default function App() {
   const [toolExecutionArguments, setToolExecutionArguments] = useState("{}");
   const [toolExecutionResult, setToolExecutionResult] = useState<Record<string, unknown> | null>(null);
   const [isExecutingTool, setIsExecutingTool] = useState(false);
+  const [terminalJobShell, setTerminalJobShell] = useState("wsl");
+  const [terminalJobCommand, setTerminalJobCommand] = useState("");
+  const [terminalJobWorkingDirectory, setTerminalJobWorkingDirectory] = useState("/mnt/f");
+  const [terminalJobShellMode, setTerminalJobShellMode] = useState("interactive");
+  const [isStartingTerminalJob, setIsStartingTerminalJob] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isCreating, setIsCreating] = useState(false);
   const eventSourceRef = useRef<EventSource | null>(null);
+  const terminalJobSourceRef = useRef<EventSource | null>(null);
 
   const statusLabel = selectedRun?.status ?? "idle";
   const evalPercent = useMemo(() => {
@@ -107,6 +123,13 @@ export default function App() {
     if (selectedTools.length === 0) return "No tools selected";
     return `${selectedTools.length} of ${tools.length} tools enabled`;
   }, [selectedTools.length, tools.length]);
+  const terminalLogText = useMemo(
+    () =>
+      terminalJobLogs
+        .map((log) => `[${log.stream}] ${log.text}`)
+        .join("\n"),
+    [terminalJobLogs],
+  );
 
   const loadRun = useCallback(async (runId: string) => {
     const [run, runMemory, runEvents] = await Promise.all([getRun(runId), getRunMemory(runId), getRunEvents(runId)]);
@@ -124,18 +147,29 @@ export default function App() {
     setRuns(history);
   }, []);
 
+  const refreshTerminalJobs = useCallback(async () => {
+    const jobs = await listTerminalJobs();
+    setTerminalJobs(jobs);
+  }, []);
+
   const initializeRuns = useCallback(async () => {
-    const [toolCatalog, memoryRecords, skillRecords, history] = await Promise.all([
+    const [toolCatalog, memoryRecords, skillRecords, history, jobs] = await Promise.all([
       listTools(),
       listMemory(),
       listSkills(),
       listRuns(),
+      listTerminalJobs(),
     ]);
     setTools(toolCatalog);
     setSelectedTools(toolCatalog.map((tool) => tool.name));
     setToolExecutionTool(toolCatalog.find((tool) => tool.name === "calculator")?.name ?? toolCatalog[0]?.name ?? "");
     setAllMemories(memoryRecords);
     setSkills(skillRecords);
+    setTerminalJobs(jobs);
+    setSelectedTerminalJob(jobs[0] ?? null);
+    if (jobs[0]) {
+      setTerminalJobLogs(await getTerminalJobLogs(jobs[0].id));
+    }
     setRuns(history);
     if (history.length > 0) {
       await loadRun(history[0].id);
@@ -144,7 +178,10 @@ export default function App() {
 
   useEffect(() => {
     initializeRuns().catch((caught: unknown) => setError(String(caught)));
-    return () => eventSourceRef.current?.close();
+    return () => {
+      eventSourceRef.current?.close();
+      terminalJobSourceRef.current?.close();
+    };
   }, [initializeRuns]);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -360,6 +397,88 @@ export default function App() {
     } finally {
       setIsExecutingTool(false);
     }
+  }
+
+  async function handleStartTerminalJob(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const command = terminalJobCommand.trim();
+    const workingDirectory = terminalJobWorkingDirectory.trim();
+    if (!command || !workingDirectory) return;
+    const confirmed = window.confirm("Start this terminal job? It may modify local files and run until cancelled.");
+    if (!confirmed) return;
+    setError(null);
+    setTerminalJobLogs([]);
+    setIsStartingTerminalJob(true);
+    try {
+      const job = await createTerminalJob({
+        shell: terminalJobShell,
+        command,
+        working_directory: workingDirectory,
+        shell_mode: terminalJobShell === "wsl" ? terminalJobShellMode : null,
+        confirm_risk: true,
+      });
+      setSelectedTerminalJob(job);
+      setTerminalJobs((current) => [job, ...current.filter((item) => item.id !== job.id)]);
+      attachTerminalJobStream(job.id);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setIsStartingTerminalJob(false);
+    }
+  }
+
+  async function handleTerminalJobClick(jobId: string) {
+    terminalJobSourceRef.current?.close();
+    setError(null);
+    try {
+      const [job, logs] = await Promise.all([getTerminalJob(jobId), getTerminalJobLogs(jobId)]);
+      setSelectedTerminalJob(job);
+      setTerminalJobLogs(logs);
+      if (["starting", "running", "cancelling"].includes(job.status)) {
+        attachTerminalJobStream(job.id);
+      }
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    }
+  }
+
+  async function handleCancelTerminalJob() {
+    if (!selectedTerminalJob) return;
+    const confirmed = window.confirm(`Cancel terminal job ${selectedTerminalJob.id}?`);
+    if (!confirmed) return;
+    setError(null);
+    try {
+      const job = await cancelTerminalJob(selectedTerminalJob.id);
+      setSelectedTerminalJob(job);
+      setTerminalJobs((current) => current.map((item) => (item.id === job.id ? job : item)));
+      attachTerminalJobStream(job.id);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    }
+  }
+
+  function attachTerminalJobStream(jobId: string) {
+    terminalJobSourceRef.current?.close();
+    const source = new EventSource(`${API_BASE}/terminal/jobs/${jobId}/logs/stream`);
+    terminalJobSourceRef.current = source;
+    source.addEventListener("terminal.job.log", (message) => {
+      const log = JSON.parse((message as MessageEvent).data) as TerminalJobLog;
+      setTerminalJobLogs((current) =>
+        current.some((item) => item.id === log.id) ? current : [...current, log],
+      );
+    });
+    source.addEventListener("terminal.job.status", (message) => {
+      const job = JSON.parse((message as MessageEvent).data) as TerminalJob;
+      setSelectedTerminalJob(job);
+      setTerminalJobs((current) => current.map((item) => (item.id === job.id ? job : item)));
+      if (["completed", "failed", "cancelled"].includes(job.status)) {
+        source.close();
+        void refreshTerminalJobs();
+      }
+    });
+    source.onerror = () => {
+      source.close();
+    };
   }
 
   async function handleRetry() {
@@ -638,6 +757,108 @@ export default function App() {
                 {toolExecutionResult ? (
                   <pre className="tool-runner-result">{JSON.stringify(toolExecutionResult, null, 2)}</pre>
                 ) : null}
+              </div>
+
+              <div className="inspection-block">
+                <h3>Terminal Jobs</h3>
+                <form className="terminal-job-form" onSubmit={(event) => void handleStartTerminalJob(event)}>
+                  <div className="split-fields">
+                    <label htmlFor="terminal-job-shell">
+                      Shell
+                      <select
+                        id="terminal-job-shell"
+                        onChange={(event) => setTerminalJobShell(event.target.value)}
+                        value={terminalJobShell}
+                      >
+                        <option value="wsl">WSL</option>
+                        <option value="powershell">PowerShell</option>
+                      </select>
+                    </label>
+                    <label htmlFor="terminal-job-shell-mode">
+                      WSL mode
+                      <select
+                        disabled={terminalJobShell !== "wsl"}
+                        id="terminal-job-shell-mode"
+                        onChange={(event) => setTerminalJobShellMode(event.target.value)}
+                        value={terminalJobShellMode}
+                      >
+                        <option value="interactive">interactive</option>
+                        <option value="login">login</option>
+                        <option value="login_interactive">login_interactive</option>
+                      </select>
+                    </label>
+                  </div>
+                  <label htmlFor="terminal-job-working-directory">Working directory</label>
+                  <input
+                    id="terminal-job-working-directory"
+                    onChange={(event) => setTerminalJobWorkingDirectory(event.target.value)}
+                    placeholder={terminalJobShell === "wsl" ? "/mnt/f" : "F:/"}
+                    value={terminalJobWorkingDirectory}
+                  />
+                  <label htmlFor="terminal-job-command">Command</label>
+                  <textarea
+                    id="terminal-job-command"
+                    onChange={(event) => setTerminalJobCommand(event.target.value)}
+                    placeholder='openclaw infer model run --prompt "what are we working on today?"'
+                    rows={4}
+                    spellCheck={false}
+                    value={terminalJobCommand}
+                  />
+                  <div className="form-actions">
+                    <button
+                      disabled={!terminalJobCommand.trim() || !terminalJobWorkingDirectory.trim() || isStartingTerminalJob}
+                      type="submit"
+                    >
+                      <TerminalSquare aria-hidden="true" />
+                      <span>{isStartingTerminalJob ? "Starting" : "Start Job"}</span>
+                    </button>
+                    <button
+                      disabled={
+                        !selectedTerminalJob ||
+                        !["starting", "running", "cancelling"].includes(selectedTerminalJob.status)
+                      }
+                      onClick={() => void handleCancelTerminalJob()}
+                      type="button"
+                    >
+                      <Square aria-hidden="true" />
+                      <span>Cancel Job</span>
+                    </button>
+                  </div>
+                </form>
+                {selectedTerminalJob ? (
+                  <div className="job-summary">
+                    <div>
+                      <strong>{selectedTerminalJob.status}</strong>
+                      <small>
+                        {selectedTerminalJob.shell}
+                        {selectedTerminalJob.pid ? ` · pid ${selectedTerminalJob.pid}` : ""}
+                        {selectedTerminalJob.exit_code !== null && selectedTerminalJob.exit_code !== undefined
+                          ? ` · exit ${selectedTerminalJob.exit_code}`
+                          : ""}
+                      </small>
+                    </div>
+                    <span>{selectedTerminalJob.command}</span>
+                    {selectedTerminalJob.error ? <small className="job-error">{selectedTerminalJob.error}</small> : null}
+                  </div>
+                ) : (
+                  <p className="muted">No terminal job selected.</p>
+                )}
+                <pre className="terminal-log">{terminalLogText || "No job logs yet."}</pre>
+                <ul className="job-list compact">
+                  {terminalJobs.slice(0, 6).map((job) => (
+                    <li key={job.id}>
+                      <button
+                        className={selectedTerminalJob?.id === job.id ? "selected" : ""}
+                        onClick={() => void handleTerminalJobClick(job.id)}
+                        type="button"
+                      >
+                        <strong>{job.status}</strong>
+                        <span>{job.command}</span>
+                        <small>{job.shell}</small>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
               </div>
 
               <div className="inspection-block">

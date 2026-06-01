@@ -1,6 +1,6 @@
 # Mnemosyne Core
 
-Local-first agent harness MVP with a FastAPI backend, SQLite memory, reusable agent skills, safe tools, LiteLLM model adapter, eval records, and a React/Vite run console.
+Local-first agent harness MVP with a FastAPI backend, SQLite memory, reusable agent skills, safe tools, terminal jobs, LiteLLM model adapter, eval records, and a React/Vite run console.
 
 ## Quick Start
 

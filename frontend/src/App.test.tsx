@@ -146,6 +146,89 @@ describe("Run Console", () => {
             requires_confirmation: false,
           });
         }
+        if (url.endsWith("/terminal/jobs") && init?.method === "POST") {
+          const body = JSON.parse(String(init.body));
+          return Response.json({
+            id: "job-2",
+            shell: body.shell,
+            command: body.command,
+            working_directory: body.working_directory,
+            shell_mode: body.shell_mode,
+            status: "running",
+            pid: 1234,
+            exit_code: null,
+            error: null,
+            created_at: "2026-05-08T12:00:00Z",
+            started_at: "2026-05-08T12:00:00Z",
+            completed_at: null,
+            updated_at: "2026-05-08T12:00:00Z",
+          });
+        }
+        if (url.endsWith("/terminal/jobs/job-1/cancel") || url.endsWith("/terminal/jobs/job-2/cancel")) {
+          return Response.json({
+            id: url.includes("job-2") ? "job-2" : "job-1",
+            shell: "wsl",
+            command: url.includes("job-2") ? "openclaw status --watch" : "openclaw status",
+            working_directory: "/mnt/f",
+            shell_mode: "interactive",
+            status: "cancelling",
+            pid: 1233,
+            exit_code: null,
+            error: null,
+            created_at: "2026-05-08T12:00:00Z",
+            started_at: "2026-05-08T12:00:00Z",
+            completed_at: null,
+            updated_at: "2026-05-08T12:01:00Z",
+          });
+        }
+        if (url.endsWith("/terminal/jobs/job-1/logs")) {
+          return Response.json([
+            {
+              id: "log-1",
+              job_id: "job-1",
+              sequence: 1,
+              stream: "stdout",
+              text: "OpenClaw is ready",
+              created_at: "2026-05-08T12:00:01Z",
+            },
+          ]);
+        }
+        if (url.endsWith("/terminal/jobs/job-1")) {
+          return Response.json({
+            id: "job-1",
+            shell: "wsl",
+            command: "openclaw status",
+            working_directory: "/mnt/f",
+            shell_mode: "interactive",
+            status: "completed",
+            pid: 1233,
+            exit_code: 0,
+            error: null,
+            created_at: "2026-05-08T12:00:00Z",
+            started_at: "2026-05-08T12:00:00Z",
+            completed_at: "2026-05-08T12:00:02Z",
+            updated_at: "2026-05-08T12:00:02Z",
+          });
+        }
+        if (url.endsWith("/terminal/jobs")) {
+          return Response.json([
+            {
+              id: "job-1",
+              shell: "wsl",
+              command: "openclaw status",
+              working_directory: "/mnt/f",
+              shell_mode: "interactive",
+              status: "completed",
+              pid: 1233,
+              exit_code: 0,
+              error: null,
+              created_at: "2026-05-08T12:00:00Z",
+              started_at: "2026-05-08T12:00:00Z",
+              completed_at: "2026-05-08T12:00:02Z",
+              updated_at: "2026-05-08T12:00:02Z",
+            },
+          ]);
+        }
         if (url.endsWith("/runs/run-1/retry")) {
           return Response.json({ id: "run-3", status: "running", goal: "research battery safety" });
         }
@@ -403,6 +486,62 @@ describe("Run Console", () => {
     expect(await screen.findByText(/"status": "completed"/i)).toBeInTheDocument();
   });
 
+  it("starts and streams long-running terminal jobs", async () => {
+    const fetchMock = vi.mocked(fetch);
+    render(<App />);
+
+    expect(await screen.findByText(/OpenClaw is ready/i)).toBeInTheDocument();
+    await userEvent.type(screen.getByLabelText(/^command$/i), "openclaw status --watch");
+    await userEvent.click(screen.getByRole("button", { name: /start job/i }));
+
+    await waitFor(() => {
+      const createCall = fetchMock.mock.calls.find(
+        ([url, init]) => String(url).endsWith("/terminal/jobs") && init?.method === "POST",
+      );
+      expect(createCall).toBeDefined();
+      const body = JSON.parse(String(createCall?.[1]?.body));
+      expect(body.shell).toBe("wsl");
+      expect(body.working_directory).toBe("/mnt/f");
+      expect(body.confirm_risk).toBe(true);
+    });
+    await waitFor(() =>
+      expect(MockEventSource.instances.some((source) => source.url.includes("/terminal/jobs/job-2/logs/stream"))).toBe(
+        true,
+      ),
+    );
+    const jobStream = MockEventSource.instances.find((source) =>
+      source.url.includes("/terminal/jobs/job-2/logs/stream"),
+    );
+    act(() => {
+      jobStream?.emit("terminal.job.log", {
+        id: "log-2",
+        job_id: "job-2",
+        sequence: 1,
+        stream: "stdout",
+        text: "streamed status",
+        created_at: "2026-05-08T12:00:01Z",
+      });
+      jobStream?.emit("terminal.job.status", {
+        id: "job-2",
+        shell: "wsl",
+        command: "openclaw status --watch",
+        working_directory: "/mnt/f",
+        shell_mode: "interactive",
+        status: "completed",
+        pid: 1234,
+        exit_code: 0,
+        error: null,
+        created_at: "2026-05-08T12:00:00Z",
+        started_at: "2026-05-08T12:00:00Z",
+        completed_at: "2026-05-08T12:00:03Z",
+        updated_at: "2026-05-08T12:00:03Z",
+      });
+    });
+
+    expect(await screen.findByText(/streamed status/i)).toBeInTheDocument();
+    expect(await screen.findByText(/exit 0/i)).toBeInTheDocument();
+  });
+
   it("shows allowed tools in a dropdown menu with elevated WSL visible", async () => {
     render(<App />);
 
@@ -427,7 +566,7 @@ describe("Run Console", () => {
     await userEvent.click(screen.getByRole("button", { name: /retry/i }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("/runs/run-1/retry"), expect.anything()));
 
-    await userEvent.click(screen.getByRole("button", { name: /cancel/i }));
+    await userEvent.click(screen.getByRole("button", { name: /^cancel$/i }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("/runs/run-3/cancel"), expect.anything()));
   });
 

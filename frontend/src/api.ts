@@ -77,6 +77,31 @@ export type ToolExecutionResult = {
   requires_confirmation: boolean;
 };
 
+export type TerminalJob = {
+  id: string;
+  shell: string;
+  command: string;
+  working_directory: string;
+  shell_mode?: string | null;
+  status: "starting" | "running" | "cancelling" | "completed" | "failed" | "cancelled";
+  pid?: number | null;
+  exit_code?: number | null;
+  error?: string | null;
+  created_at: string;
+  started_at?: string | null;
+  completed_at?: string | null;
+  updated_at: string;
+};
+
+export type TerminalJobLog = {
+  id: string;
+  job_id: string;
+  sequence: number;
+  stream: "stdout" | "stderr" | "system";
+  text: string;
+  created_at: string;
+};
+
 export type CreateRunOptions = {
   constraints?: string;
   allowed_tools?: string[];
@@ -196,4 +221,33 @@ export function executeTool(
     method: "POST",
     body: JSON.stringify({ arguments: argumentsPayload, confirm_risk: confirmRisk }),
   });
+}
+
+export function listTerminalJobs() {
+  return request<TerminalJob[]>("/terminal/jobs");
+}
+
+export function createTerminalJob(payload: {
+  shell: string;
+  command: string;
+  working_directory: string;
+  shell_mode?: string | null;
+  confirm_risk: boolean;
+}) {
+  return request<TerminalJob>("/terminal/jobs", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function cancelTerminalJob(jobId: string) {
+  return request<TerminalJob>(`/terminal/jobs/${jobId}/cancel`, { method: "POST" });
+}
+
+export function getTerminalJob(jobId: string) {
+  return request<TerminalJob>(`/terminal/jobs/${jobId}`);
+}
+
+export function getTerminalJobLogs(jobId: string) {
+  return request<TerminalJobLog[]>(`/terminal/jobs/${jobId}/logs`);
 }

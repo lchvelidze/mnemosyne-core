@@ -5,6 +5,7 @@ from time import perf_counter
 
 from mnemosyne_core.db import Database, default_contract
 from mnemosyne_core.evals import score_answer
+from mnemosyne_core.jobs import TerminalJobManager
 from mnemosyne_core.memory import MemoryStore
 from mnemosyne_core.model_client import ModelClient, ModelRequest
 from mnemosyne_core.models import AgentRun, TaskContract
@@ -20,12 +21,14 @@ class AgentRuntime:
         tools: ToolRegistry,
         model_client: ModelClient,
         skills: SkillStore | None = None,
+        jobs: TerminalJobManager | None = None,
     ) -> None:
         self.db = db
         self.memory = memory
         self.tools = tools
         self.model_client = model_client
         self.skills = skills
+        self.jobs = jobs
 
     async def run_goal(self, goal: str, contract: TaskContract | None = None) -> AgentRun:
         contract = contract or default_contract(goal, self.tools.names())

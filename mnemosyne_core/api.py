@@ -45,6 +45,14 @@ class ToolExecuteRequest(BaseModel):
     confirm_risk: bool = False
 
 
+class TerminalJobRequest(BaseModel):
+    shell: str = Field(default="powershell", min_length=1)
+    command: str = Field(min_length=1)
+    working_directory: str = Field(min_length=1)
+    shell_mode: str | None = None
+    confirm_risk: bool = False
+
+
 def create_app(runtime: AgentRuntime, *, run_inline: bool = False) -> FastAPI:
     app = FastAPI(title="Mnemosyne Core", version="0.1.0")
     app.state.runtime = runtime
@@ -160,6 +168,65 @@ def create_app(runtime: AgentRuntime, *, run_inline: bool = False) -> FastAPI:
             "requires_confirmation": requires_confirmation,
         }
 
+    @app.post("/terminal/jobs", status_code=201)
+    def create_terminal_job(payload: TerminalJobRequest) -> dict:
+        if not payload.confirm_risk:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Terminal jobs require confirmation because commands can modify "
+                    "local files."
+                ),
+            )
+        try:
+            job = _job_manager(runtime).start(
+                {
+                    "shell": payload.shell,
+                    "command": payload.command,
+                    "working_directory": payload.working_directory,
+                    "shell_mode": payload.shell_mode,
+                }
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return job.to_dict()
+
+    @app.get("/terminal/jobs")
+    def list_terminal_jobs() -> list[dict]:
+        return [job.to_dict() for job in runtime.db.list_terminal_jobs()]
+
+    @app.get("/terminal/jobs/{job_id}")
+    def get_terminal_job(job_id: str) -> dict:
+        job = runtime.db.get_terminal_job(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Terminal job not found")
+        return job.to_dict()
+
+    @app.post("/terminal/jobs/{job_id}/cancel")
+    def cancel_terminal_job(job_id: str) -> dict:
+        try:
+            return _job_manager(runtime).cancel(job_id).to_dict()
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/terminal/jobs/{job_id}/logs")
+    def list_terminal_job_logs(job_id: str, after_sequence: int = 0) -> list[dict]:
+        if runtime.db.get_terminal_job(job_id) is None:
+            raise HTTPException(status_code=404, detail="Terminal job not found")
+        return [
+            log.to_dict()
+            for log in runtime.db.list_terminal_job_logs(job_id, after_sequence=after_sequence)
+        ]
+
+    @app.get("/terminal/jobs/{job_id}/logs/stream")
+    async def stream_terminal_job_logs(job_id: str) -> StreamingResponse:
+        if runtime.db.get_terminal_job(job_id) is None:
+            raise HTTPException(status_code=404, detail="Terminal job not found")
+        return StreamingResponse(
+            _terminal_job_stream(runtime, job_id),
+            media_type="text/event-stream",
+        )
+
     @app.get("/runs/{run_id}/events")
     async def stream_events(run_id: str) -> StreamingResponse:
         if runtime.db.get_run(run_id) is None:
@@ -269,6 +336,12 @@ def _skill_store(runtime: AgentRuntime):
     return runtime.skills
 
 
+def _job_manager(runtime: AgentRuntime):
+    if runtime.jobs is None:
+        raise HTTPException(status_code=503, detail="Terminal jobs are not configured")
+    return runtime.jobs
+
+
 def _tool_spec(runtime: AgentRuntime, tool_name: str):
     for spec in runtime.tools.specs():
         if spec.name == tool_name:
@@ -314,5 +387,31 @@ async def _event_stream(runtime: AgentRuntime, run_id: str) -> AsyncIterator[str
             )
         run = runtime.db.get_run(run_id)
         if run and run.status in {"completed", "failed", "cancelled"} and not events:
+            break
+        await asyncio.sleep(0.2)
+
+
+async def _terminal_job_stream(runtime: AgentRuntime, job_id: str) -> AsyncIterator[str]:
+    sequence = 0
+    last_status: str | None = None
+    while True:
+        logs = runtime.db.list_terminal_job_logs(job_id, after_sequence=sequence)
+        for log in logs:
+            sequence = log.sequence
+            yield (
+                f"id: {log.sequence}\n"
+                "event: terminal.job.log\n"
+                f"data: {json.dumps(log.to_dict())}\n\n"
+            )
+        job = runtime.db.get_terminal_job(job_id)
+        if job is None:
+            break
+        if job.status != last_status:
+            last_status = job.status
+            yield (
+                f"event: terminal.job.status\n"
+                f"data: {json.dumps(job.to_dict())}\n\n"
+            )
+        if job.status in {"completed", "failed", "cancelled"} and not logs:
             break
         await asyncio.sleep(0.2)

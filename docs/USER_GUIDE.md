@@ -366,6 +366,51 @@ Invoke-RestMethod `
 
 Tools with write, terminal, modify, or elevated permission categories require `"confirm_risk": true`. The dashboard Tool Runner prompts before sending that confirmation.
 
+### Terminal Jobs
+
+Use terminal jobs for long-running local commands such as OpenClaw model runs. Jobs return immediately, keep running in the background, persist status/logs in SQLite, and expose live log streaming.
+
+```http
+GET /terminal/jobs
+POST /terminal/jobs
+GET /terminal/jobs/{job_id}
+POST /terminal/jobs/{job_id}/cancel
+GET /terminal/jobs/{job_id}/logs
+GET /terminal/jobs/{job_id}/logs/stream
+```
+
+Create a WSL job:
+
+```json
+{
+  "shell": "wsl",
+  "working_directory": "/mnt/f",
+  "shell_mode": "interactive",
+  "command": "openclaw infer model run --prompt \"what were we working on today?\"",
+  "confirm_risk": true
+}
+```
+
+PowerShell:
+
+```powershell
+$body = @{
+  shell = "wsl"
+  working_directory = "/mnt/f"
+  shell_mode = "interactive"
+  command = 'openclaw infer model run --prompt "what were we working on today?"'
+  confirm_risk = $true
+} | ConvertTo-Json
+
+Invoke-RestMethod `
+  -Uri "http://127.0.0.1:8002/terminal/jobs" `
+  -Method Post `
+  -ContentType "application/json" `
+  -Body $body
+```
+
+The log stream is Server-Sent Events. It emits `terminal.job.log` records for stdout/stderr/system lines and `terminal.job.status` records when the job changes status.
+
 ### Create Run
 
 ```http
@@ -763,6 +808,8 @@ openclaw infer model run --prompt "what were we working on today?"
 
 The model should call `run_terminal_command` with WSL, `/mnt/f`, and a timeout up to `300`.
 
+For commands expected to run longer than a normal tool call, use **Terminal Jobs** in the dashboard instead of `run_terminal_command`. Jobs are not tied to the agent run timeout and keep their stdout/stderr logs after refresh.
+
 ### `run_elevated_powershell`
 
 Permission:
@@ -1154,7 +1201,6 @@ For WSL terminal working directories, use WSL paths:
 
 ## Recommended Next Upgrades
 
-- Add process/job manager for long-running terminal commands.
 - Add richer eval rubrics.
 - Add vector retrieval while keeping SQLite FTS as fallback.
 - Add export/import for memory and skills.
