@@ -26,7 +26,7 @@ Browser Dashboard
         | HTTP + Server-Sent Events
         v
 FastAPI Backend
-  mnemosyne_core.main:app at http://127.0.0.1:8002
+  mnemosyne_core.main:app at http://127.0.0.1:8003
         |
         +-- AgentRuntime
         |     - creates/continues runs
@@ -118,14 +118,14 @@ cd ..
 Recommended current local setup:
 
 ```powershell
-python -m uvicorn mnemosyne_core.main:app --reload --host 127.0.0.1 --port 8002
+python -m uvicorn mnemosyne_core.main:app --reload --host 127.0.0.1 --port 8003
 ```
 
 In another terminal:
 
 ```powershell
 cd frontend
-$env:VITE_API_BASE_URL = "http://127.0.0.1:8002"
+$env:VITE_API_BASE_URL = "http://127.0.0.1:8003"
 npm run dev -- --port 5173
 ```
 
@@ -138,7 +138,7 @@ http://127.0.0.1:5173/
 Health check:
 
 ```powershell
-Invoke-RestMethod -Uri "http://127.0.0.1:8002/health"
+Invoke-RestMethod -Uri "http://127.0.0.1:8003/health"
 ```
 
 Expected:
@@ -329,7 +329,7 @@ GET /runs/{run_id}/events.json
 Base URL:
 
 ```text
-http://127.0.0.1:8002
+http://127.0.0.1:8003
 ```
 
 ### Health
@@ -341,7 +341,7 @@ GET /health
 PowerShell:
 
 ```powershell
-Invoke-RestMethod -Uri "http://127.0.0.1:8002/health"
+Invoke-RestMethod -Uri "http://127.0.0.1:8003/health"
 ```
 
 ### Tools
@@ -353,7 +353,7 @@ GET /tools
 PowerShell:
 
 ```powershell
-Invoke-RestMethod -Uri "http://127.0.0.1:8002/tools"
+Invoke-RestMethod -Uri "http://127.0.0.1:8003/tools"
 ```
 
 ### Execute A Tool Directly
@@ -380,7 +380,7 @@ $body = @{
 } | ConvertTo-Json -Depth 5
 
 Invoke-RestMethod `
-  -Uri "http://127.0.0.1:8002/tools/calculator/execute" `
+  -Uri "http://127.0.0.1:8003/tools/calculator/execute" `
   -Method Post `
   -ContentType "application/json" `
   -Body $body
@@ -425,7 +425,7 @@ $body = @{
 } | ConvertTo-Json
 
 Invoke-RestMethod `
-  -Uri "http://127.0.0.1:8002/terminal/jobs" `
+  -Uri "http://127.0.0.1:8003/terminal/jobs" `
   -Method Post `
   -ContentType "application/json" `
   -Body $body
@@ -460,7 +460,7 @@ $body = @{
 } | ConvertTo-Json
 
 Invoke-RestMethod `
-  -Uri "http://127.0.0.1:8002/runs" `
+  -Uri "http://127.0.0.1:8003/runs" `
   -Method Post `
   -ContentType "application/json" `
   -Body $body
@@ -1063,7 +1063,7 @@ $body = @{
 } | ConvertTo-Json
 
 Invoke-RestMethod `
-  -Uri "http://127.0.0.1:8002/memory" `
+  -Uri "http://127.0.0.1:8003/memory" `
   -Method Post `
   -ContentType "application/json" `
   -Body $body
@@ -1108,7 +1108,7 @@ PowerShell export:
 
 ```powershell
 Invoke-RestMethod `
-  -Uri "http://127.0.0.1:8002/knowledge/export" `
+  -Uri "http://127.0.0.1:8003/knowledge/export" `
   | ConvertTo-Json -Depth 20 `
   | Set-Content -Path "F:\mnemosyne-knowledge.json"
 ```
@@ -1122,7 +1122,7 @@ $backup | Add-Member -NotePropertyName confirm_replace -NotePropertyValue $true 
 $body = $backup | ConvertTo-Json -Depth 20
 
 Invoke-RestMethod `
-  -Uri "http://127.0.0.1:8002/knowledge/import" `
+  -Uri "http://127.0.0.1:8003/knowledge/import" `
   -Method Post `
   -ContentType "application/json" `
   -Body $body
@@ -1143,7 +1143,7 @@ $body = @{
 } | ConvertTo-Json
 
 Invoke-RestMethod `
-  -Uri "http://127.0.0.1:8002/skills" `
+  -Uri "http://127.0.0.1:8003/skills" `
   -Method Post `
   -ContentType "application/json" `
   -Body $body
@@ -1158,7 +1158,7 @@ $body = @{
 } | ConvertTo-Json
 
 Invoke-RestMethod `
-  -Uri "http://127.0.0.1:8002/runs" `
+  -Uri "http://127.0.0.1:8003/runs" `
   -Method Post `
   -ContentType "application/json" `
   -Body $body
@@ -1219,19 +1219,19 @@ Do not commit the database.
 Check port:
 
 ```powershell
-netstat -ano | Select-String ":8002"
+netstat -ano | Select-String ":8003"
 ```
 
 Start backend:
 
 ```powershell
-python -m uvicorn mnemosyne_core.main:app --reload --host 127.0.0.1 --port 8002
+python -m uvicorn mnemosyne_core.main:app --reload --host 127.0.0.1 --port 8003
 ```
 
 Check logs:
 
 ```powershell
-Get-Content -Tail 80 backend-8002.err.log
+Get-Content -Tail 80 backend-8003.err.log
 ```
 
 ### Frontend Not Pointing At Backend
@@ -1248,7 +1248,7 @@ Start frontend:
 
 ```powershell
 cd frontend
-$env:VITE_API_BASE_URL = "http://127.0.0.1:8002"
+$env:VITE_API_BASE_URL = "http://127.0.0.1:8003"
 npm run dev -- --port 5173
 ```
 
@@ -1257,7 +1257,7 @@ npm run dev -- --port 5173
 Check:
 
 ```powershell
-Invoke-RestMethod -Uri "http://127.0.0.1:8002/health"
+Invoke-RestMethod -Uri "http://127.0.0.1:8003/health"
 ```
 
 If model is missing, configure:
@@ -1317,3 +1317,4 @@ For WSL terminal working directories, use WSL paths:
 ## Recommended Next Upgrades
 
 - Add a first-run setup screen for `.env` validation.
+
