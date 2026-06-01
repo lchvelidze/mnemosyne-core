@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import uuid
 from pathlib import Path
@@ -386,6 +387,46 @@ class Database:
         if ranked:
             return [self._memory_from_row(row) for row in ranked[:limit]]
         return [self._memory_from_row(row) for row in fts_rows[:limit]]
+
+    def export_knowledge(self) -> dict[str, Any]:
+        memories = [memory.to_dict() for memory in self.list_memories()]
+        skills = [skill.to_dict() for skill in self.list_skills()]
+        return {
+            "kind": "mnemosyne_core_knowledge_export",
+            "schema_version": 1,
+            "exported_at": now_iso(),
+            "counts": {
+                "memories": len(memories),
+                "skills": len(skills),
+            },
+            "memories": memories,
+            "skills": skills,
+        }
+
+    def import_knowledge(
+        self,
+        *,
+        memories: list[dict[str, Any]],
+        skills: list[dict[str, Any]],
+        mode: str = "merge",
+    ) -> dict[str, Any]:
+        if mode not in {"merge", "replace"}:
+            raise ValueError("Import mode must be 'merge' or 'replace'")
+        summary: dict[str, Any] = {
+            "mode": mode,
+            "memories": {"created": 0, "updated": 0, "skipped": 0},
+            "skills": {"created": 0, "updated": 0, "skipped": 0},
+        }
+        with self.connect() as conn:
+            if mode == "replace":
+                self._clear_knowledge(conn)
+            for memory in memories:
+                result = self._import_memory(conn, memory, allow_dedupe=mode == "merge")
+                summary["memories"][result] += 1
+            for skill in skills:
+                result = self._import_skill(conn, skill)
+                summary["skills"][result] += 1
+        return summary
 
     def add_skill(
         self,
@@ -990,6 +1031,153 @@ class Database:
                 " ".join(skill.trigger_terms),
             ),
         )
+
+    @staticmethod
+    def _clear_knowledge(conn: sqlite3.Connection) -> None:
+        conn.execute("DELETE FROM memories_fts")
+        conn.execute("DELETE FROM memory_vectors")
+        conn.execute("DELETE FROM memories")
+        conn.execute("DELETE FROM skills_fts")
+        conn.execute("DELETE FROM skill_vectors")
+        conn.execute("DELETE FROM skills")
+
+    def _import_memory(
+        self,
+        conn: sqlite3.Connection,
+        memory: dict[str, Any],
+        *,
+        allow_dedupe: bool,
+    ) -> str:
+        memory_id = str(memory.get("id") or uuid.uuid4())
+        text = str(memory["text"]).strip()
+        source = str(memory.get("source") or "import").strip() or "import"
+        tags = [str(tag).strip() for tag in memory.get("tags", []) if str(tag).strip()]
+        importance = max(0.0, min(float(memory.get("importance", 0.5)), 1.0))
+        created_at = str(memory.get("created_at") or now_iso())
+        existing = conn.execute("SELECT id FROM memories WHERE id = ?", (memory_id,)).fetchone()
+        if existing is None and allow_dedupe:
+            duplicate = conn.execute(
+                """
+                SELECT id FROM memories
+                WHERE text = ? AND source = ?
+                LIMIT 1
+                """,
+                (text, source),
+            ).fetchone()
+            if duplicate is not None:
+                return "skipped"
+        if existing is None:
+            conn.execute(
+                """
+                INSERT INTO memories (id, text, source, tags, importance, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (memory_id, text, source, json.dumps(tags), importance, created_at),
+            )
+            result = "created"
+        else:
+            conn.execute(
+                """
+                UPDATE memories
+                SET text = ?, source = ?, tags = ?, importance = ?, created_at = ?
+                WHERE id = ?
+                """,
+                (text, source, json.dumps(tags), importance, created_at, memory_id),
+            )
+            result = "updated"
+        conn.execute("DELETE FROM memories_fts WHERE memory_id = ?", (memory_id,))
+        conn.execute(
+            "INSERT INTO memories_fts (memory_id, text) VALUES (?, ?)",
+            (memory_id, text),
+        )
+        self._upsert_memory_vector(conn, memory_id, text)
+        return result
+
+    def _import_skill(self, conn: sqlite3.Connection, skill: dict[str, Any]) -> str:
+        skill_id = str(skill.get("id") or uuid.uuid4())
+        name = self._normalize_import_skill_name(str(skill["name"]))
+        description = str(skill["description"]).strip()
+        instructions = str(skill["instructions"]).strip()
+        trigger_terms = [
+            str(term).strip() for term in skill.get("trigger_terms", []) if str(term).strip()
+        ]
+        tool_names = [
+            str(tool).strip() for tool in skill.get("tool_names", []) if str(tool).strip()
+        ]
+        enabled = bool(skill.get("enabled", True))
+        created_at = str(skill.get("created_at") or now_iso())
+        updated_at = str(skill.get("updated_at") or created_at)
+        existing = conn.execute("SELECT id FROM skills WHERE id = ?", (skill_id,)).fetchone()
+        if existing is None:
+            existing = conn.execute("SELECT id FROM skills WHERE name = ?", (name,)).fetchone()
+            if existing is not None:
+                skill_id = existing["id"]
+        record = SkillRecord(
+            id=skill_id,
+            name=name,
+            description=description,
+            instructions=instructions,
+            trigger_terms=trigger_terms,
+            tool_names=tool_names,
+            enabled=enabled,
+            created_at=created_at,
+            updated_at=updated_at,
+        )
+        if existing is None:
+            conn.execute(
+                """
+                INSERT INTO skills
+                (id, name, description, instructions, trigger_terms, tool_names,
+                 enabled, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record.id,
+                    record.name,
+                    record.description,
+                    record.instructions,
+                    json.dumps(record.trigger_terms),
+                    json.dumps(record.tool_names),
+                    int(record.enabled),
+                    record.created_at,
+                    record.updated_at,
+                ),
+            )
+            result = "created"
+        else:
+            conn.execute(
+                """
+                UPDATE skills
+                SET name = ?, description = ?, instructions = ?, trigger_terms = ?,
+                    tool_names = ?, enabled = ?, created_at = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    record.name,
+                    record.description,
+                    record.instructions,
+                    json.dumps(record.trigger_terms),
+                    json.dumps(record.tool_names),
+                    int(record.enabled),
+                    record.created_at,
+                    record.updated_at,
+                    record.id,
+                ),
+            )
+            result = "updated"
+        conn.execute("DELETE FROM skills_fts WHERE skill_id = ?", (record.id,))
+        self._insert_skill_fts(conn, record)
+        self._upsert_skill_vector(conn, record)
+        return result
+
+    @staticmethod
+    def _normalize_import_skill_name(name: str) -> str:
+        normalized = re.sub(r"[^a-zA-Z0-9_-]+", "_", name.strip().lower()).strip("_")
+        if not normalized:
+            raise ValueError("Skill name must contain at least one letter or number")
+        if len(normalized) > 80:
+            raise ValueError("Skill name must be 80 characters or fewer")
+        return normalized
 
     @staticmethod
     def _upsert_memory_vector(conn: sqlite3.Connection, memory_id: str, text: str) -> None:

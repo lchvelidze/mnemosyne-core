@@ -4,7 +4,7 @@ import asyncio
 import json
 import time
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -38,6 +38,37 @@ class SkillRequest(BaseModel):
     trigger_terms: list[str] = Field(default_factory=list)
     tool_names: list[str] = Field(default_factory=list)
     enabled: bool = True
+
+
+class KnowledgeMemoryPayload(BaseModel):
+    id: str | None = None
+    text: str = Field(min_length=1)
+    source: str = Field(default="import", min_length=1)
+    tags: list[str] = Field(default_factory=list)
+    importance: float = Field(default=0.5, ge=0, le=1)
+    created_at: str | None = None
+
+
+class KnowledgeSkillPayload(BaseModel):
+    id: str | None = None
+    name: str = Field(min_length=1)
+    description: str = Field(min_length=1)
+    instructions: str = Field(min_length=1)
+    trigger_terms: list[str] = Field(default_factory=list)
+    tool_names: list[str] = Field(default_factory=list)
+    enabled: bool = True
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class KnowledgeImportRequest(BaseModel):
+    kind: str | None = None
+    schema_version: int | None = None
+    exported_at: str | None = None
+    mode: Literal["merge", "replace"] = "merge"
+    confirm_replace: bool = False
+    memories: list[KnowledgeMemoryPayload] = Field(default_factory=list)
+    skills: list[KnowledgeSkillPayload] = Field(default_factory=list)
 
 
 class ToolExecuteRequest(BaseModel):
@@ -320,6 +351,26 @@ def create_app(runtime: AgentRuntime, *, run_inline: bool = False) -> FastAPI:
         if not runtime.db.delete_skill(skill_id):
             raise HTTPException(status_code=404, detail="Skill not found")
         return Response(status_code=204)
+
+    @app.get("/knowledge/export")
+    def export_knowledge() -> dict:
+        return runtime.db.export_knowledge()
+
+    @app.post("/knowledge/import")
+    def import_knowledge(payload: KnowledgeImportRequest) -> dict:
+        if payload.mode == "replace" and not payload.confirm_replace:
+            raise HTTPException(
+                status_code=409,
+                detail="Replace imports require confirm_replace=true.",
+            )
+        try:
+            return runtime.db.import_knowledge(
+                memories=[memory.model_dump() for memory in payload.memories],
+                skills=[skill.model_dump() for skill in payload.skills],
+                mode=payload.mode,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get("/health")
     def health() -> dict[str, str]:

@@ -60,6 +60,32 @@ export type SkillRecord = {
   updated_at: string;
 };
 
+export type KnowledgeExport = {
+  kind: "mnemosyne_core_knowledge_export";
+  schema_version: number;
+  exported_at: string;
+  counts: {
+    memories: number;
+    skills: number;
+  };
+  memories: MemoryRecord[];
+  skills: SkillRecord[];
+};
+
+export type KnowledgeImportSummary = {
+  mode: "merge" | "replace";
+  memories: {
+    created: number;
+    updated: number;
+    skipped: number;
+  };
+  skills: {
+    created: number;
+    updated: number;
+    skipped: number;
+  };
+};
+
 export type RunEvent = {
   id?: string;
   sequence?: number;
@@ -218,6 +244,17 @@ export function deleteSkill(skillId: string) {
         throw new Error(text || `Request failed: ${response.status}`);
       });
     }
+  });
+}
+
+export function exportKnowledge() {
+  return request<KnowledgeExport>("/knowledge/export");
+}
+
+export function importKnowledge(payload: Record<string, unknown>) {
+  return request<KnowledgeImportSummary>("/knowledge/import", {
+    method: "POST",
+    body: JSON.stringify(payload),
   });
 }
 

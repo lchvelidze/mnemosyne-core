@@ -135,6 +135,35 @@ describe("Run Console", () => {
             },
           ]);
         }
+        if (url.endsWith("/knowledge/export")) {
+          return Response.json({
+            kind: "mnemosyne_core_knowledge_export",
+            schema_version: 1,
+            exported_at: "2026-05-08T12:00:00Z",
+            counts: { memories: 1, skills: 1 },
+            memories: [{ id: "mem-1", text: "Solar battery research prefers LFP chemistry.", source: "seed" }],
+            skills: [
+              {
+                id: "skill-1",
+                name: "openclaw_infer",
+                description: "Run OpenClaw model inference.",
+                instructions: "Use openclaw infer model run --prompt.",
+                trigger_terms: ["openclaw"],
+                tool_names: ["run_terminal_command"],
+                enabled: true,
+                created_at: "2026-05-08T12:00:00Z",
+                updated_at: "2026-05-08T12:00:00Z",
+              },
+            ],
+          });
+        }
+        if (url.endsWith("/knowledge/import") && init?.method === "POST") {
+          return Response.json({
+            mode: JSON.parse(String(init.body)).mode,
+            memories: { created: 1, updated: 0, skipped: 0 },
+            skills: { created: 1, updated: 0, skipped: 0 },
+          });
+        }
         if (url.endsWith("/tools/calculator/execute") && init?.method === "POST") {
           return Response.json({
             tool_name: "calculator",
@@ -478,6 +507,44 @@ describe("Run Console", () => {
         method: "DELETE",
       }),
     );
+  });
+
+  it("imports knowledge backup JSON from the dashboard", async () => {
+    const fetchMock = vi.mocked(fetch);
+    render(<App />);
+
+    const importJson = await screen.findByLabelText(/import json/i);
+    await userEvent.click(importJson);
+    await userEvent.paste(
+      JSON.stringify({
+        kind: "mnemosyne_core_knowledge_export",
+        schema_version: 1,
+        memories: [{ text: "Imported memory", source: "backup", tags: [], importance: 0.7 }],
+        skills: [
+          {
+            name: "Imported Skill",
+            description: "Imported workflow.",
+            instructions: "Use the restored workflow.",
+            trigger_terms: ["imported"],
+            tool_names: [],
+            enabled: true,
+          },
+        ],
+      }),
+    );
+    await userEvent.click(screen.getByRole("button", { name: /import knowledge/i }));
+
+    await waitFor(() => {
+      const importCall = fetchMock.mock.calls.find(
+        ([url, init]) => String(url).endsWith("/knowledge/import") && init?.method === "POST",
+      );
+      expect(importCall).toBeDefined();
+      const body = JSON.parse(String(importCall?.[1]?.body));
+      expect(body.mode).toBe("merge");
+      expect(body.confirm_replace).toBe(false);
+      expect(body.memories[0].text).toBe("Imported memory");
+    });
+    expect(await screen.findByText(/Imported 1 memory changes and 1 skill changes/i)).toBeInTheDocument();
   });
 
   it("runs a direct tool execution from the inspection panel", async () => {

@@ -5,6 +5,7 @@ import {
   ChevronDown,
   CheckCircle2,
   Copy,
+  Download,
   FilePenLine,
   History,
   Plus,
@@ -17,10 +18,11 @@ import {
   Square,
   TerminalSquare,
   Trash2,
+  Upload,
   Wrench,
   X,
 } from "lucide-react";
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import {
   API_BASE,
@@ -39,11 +41,13 @@ import {
   createTerminalJob,
   deleteSkill,
   executeTool,
+  exportKnowledge,
   getRun,
   getRunEvents,
   getRunMemory,
   getTerminalJob,
   getTerminalJobLogs,
+  importKnowledge as importKnowledgePayload,
   listMemory,
   listRuns,
   listSkills,
@@ -91,6 +95,11 @@ export default function App() {
   const [toolExecutionArguments, setToolExecutionArguments] = useState("{}");
   const [toolExecutionResult, setToolExecutionResult] = useState<Record<string, unknown> | null>(null);
   const [isExecutingTool, setIsExecutingTool] = useState(false);
+  const [knowledgeImportMode, setKnowledgeImportMode] = useState<"merge" | "replace">("merge");
+  const [knowledgeImportText, setKnowledgeImportText] = useState("");
+  const [knowledgeMessage, setKnowledgeMessage] = useState<string | null>(null);
+  const [isExportingKnowledge, setIsExportingKnowledge] = useState(false);
+  const [isImportingKnowledge, setIsImportingKnowledge] = useState(false);
   const [terminalJobShell, setTerminalJobShell] = useState("wsl");
   const [terminalJobCommand, setTerminalJobCommand] = useState("");
   const [terminalJobWorkingDirectory, setTerminalJobWorkingDirectory] = useState("/mnt/f");
@@ -351,6 +360,85 @@ export default function App() {
       if (editingSkillId === skill.id) resetSkillForm();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
+    }
+  }
+
+  async function handleExportKnowledge() {
+    setError(null);
+    setKnowledgeMessage(null);
+    setIsExportingKnowledge(true);
+    try {
+      const data = await exportKnowledge();
+      const serialized = JSON.stringify(data, null, 2);
+      const blob = new Blob([serialized], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `mnemosyne-knowledge-${data.exported_at.slice(0, 10)}.json`;
+      anchor.click();
+      URL.revokeObjectURL(url);
+      setKnowledgeImportText(serialized);
+      setKnowledgeMessage(`Exported ${data.counts.memories} memories and ${data.counts.skills} skills.`);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setIsExportingKnowledge(false);
+    }
+  }
+
+  function handleKnowledgeFile(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      setKnowledgeImportText(String(reader.result ?? ""));
+      setKnowledgeMessage(`Loaded ${file.name}.`);
+    };
+    reader.onerror = () => setError("Unable to read selected import file.");
+    reader.readAsText(file);
+    event.target.value = "";
+  }
+
+  async function handleImportKnowledge(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const text = knowledgeImportText.trim();
+    if (!text) return;
+    setError(null);
+    setKnowledgeMessage(null);
+    let parsed: Record<string, unknown>;
+    try {
+      const candidate = JSON.parse(text) as unknown;
+      if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+        throw new Error("Import JSON must be an object.");
+      }
+      parsed = candidate as Record<string, unknown>;
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Import JSON must be valid.");
+      return;
+    }
+    if (knowledgeImportMode === "replace") {
+      const confirmed = window.confirm("Replace all local memories and skills with this import?");
+      if (!confirmed) return;
+    }
+    setIsImportingKnowledge(true);
+    try {
+      const summary = await importKnowledgePayload({
+        ...parsed,
+        mode: knowledgeImportMode,
+        confirm_replace: knowledgeImportMode === "replace",
+      });
+      const [memoryRecords, skillRecords] = await Promise.all([listMemory(), listSkills()]);
+      setAllMemories(memoryRecords);
+      setSkills(skillRecords);
+      setKnowledgeMessage(
+        `Imported ${summary.memories.created + summary.memories.updated} memory changes and ${
+          summary.skills.created + summary.skills.updated
+        } skill changes.`,
+      );
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setIsImportingKnowledge(false);
     }
   }
 
@@ -859,6 +947,50 @@ export default function App() {
                     </li>
                   ))}
                 </ul>
+              </div>
+
+              <div className="inspection-block">
+                <h3>Knowledge Backup</h3>
+                <form className="knowledge-form" onSubmit={(event) => void handleImportKnowledge(event)}>
+                  <div className="knowledge-actions">
+                    <button disabled={isExportingKnowledge} onClick={() => void handleExportKnowledge()} type="button">
+                      <Download aria-hidden="true" />
+                      <span>{isExportingKnowledge ? "Exporting" : "Export JSON"}</span>
+                    </button>
+                    <label className="file-pick-button" htmlFor="knowledge-import-file">
+                      <Upload aria-hidden="true" />
+                      <span>Select JSON</span>
+                      <input
+                        accept="application/json,.json"
+                        id="knowledge-import-file"
+                        onChange={handleKnowledgeFile}
+                        type="file"
+                      />
+                    </label>
+                  </div>
+                  <label htmlFor="knowledge-import-mode">Import mode</label>
+                  <select
+                    id="knowledge-import-mode"
+                    onChange={(event) => setKnowledgeImportMode(event.target.value as "merge" | "replace")}
+                    value={knowledgeImportMode}
+                  >
+                    <option value="merge">Merge</option>
+                    <option value="replace">Replace</option>
+                  </select>
+                  <label htmlFor="knowledge-import-json">Import JSON</label>
+                  <textarea
+                    id="knowledge-import-json"
+                    onChange={(event) => setKnowledgeImportText(event.target.value)}
+                    rows={5}
+                    spellCheck={false}
+                    value={knowledgeImportText}
+                  />
+                  <button disabled={!knowledgeImportText.trim() || isImportingKnowledge} type="submit">
+                    <Upload aria-hidden="true" />
+                    <span>{isImportingKnowledge ? "Importing" : "Import Knowledge"}</span>
+                  </button>
+                </form>
+                {knowledgeMessage ? <p className="knowledge-message">{knowledgeMessage}</p> : null}
               </div>
 
               <div className="inspection-block">

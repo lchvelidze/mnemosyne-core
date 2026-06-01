@@ -554,6 +554,8 @@ pre {
 .skill-form button,
 .tool-runner-form button,
 .terminal-job-form button,
+.knowledge-form button,
+.file-pick-button,
 .item-actions button {
   min-height: 38px;
   border: 1px solid #c8d5cd;
@@ -572,6 +574,7 @@ pre {
 .skill-form button:disabled,
 .tool-runner-form button:disabled,
 .terminal-job-form button:disabled,
+.knowledge-form button:disabled,
 .item-actions button:disabled {
   cursor: not-allowed;
   opacity: 0.55;
@@ -582,6 +585,8 @@ pre {
 .skill-form svg,
 .tool-runner-form svg,
 .terminal-job-form svg,
+.knowledge-form svg,
+.file-pick-button svg,
 .item-actions svg {
   width: 16px;
   height: 16px;
@@ -617,7 +622,8 @@ pre {
 .memory-form,
 .skill-form,
 .tool-runner-form,
-.terminal-job-form {
+.terminal-job-form,
+.knowledge-form {
   display: grid;
   gap: 8px;
   margin-bottom: 10px;
@@ -626,17 +632,20 @@ pre {
 .memory-form label,
 .skill-form label,
 .tool-runner-form label,
-.terminal-job-form label {
+.terminal-job-form label,
+.knowledge-form label {
   font-weight: 800;
 }
 
 .memory-form textarea,
-.skill-form textarea {
+.skill-form textarea,
+.knowledge-form textarea {
   min-height: 64px;
 }
 
 .tool-runner-form textarea,
-.terminal-job-form textarea {
+.terminal-job-form textarea,
+.knowledge-form textarea {
   min-height: 120px;
   font-family: "Cascadia Mono", "Consolas", monospace;
   font-size: 0.82rem;
@@ -645,14 +654,16 @@ pre {
 .skill-form input,
 .tool-runner-form select,
 .terminal-job-form input,
-.terminal-job-form select {
+.terminal-job-form select,
+.knowledge-form select {
   min-height: 38px;
 }
 
 .skill-form input,
 .tool-runner-form select,
 .terminal-job-form input,
-.terminal-job-form select {
+.terminal-job-form select,
+.knowledge-form select {
   width: 100%;
   border: 1px solid #c8d5cd;
   border-radius: 8px;
@@ -685,15 +696,37 @@ pre {
 }
 
 .form-actions,
-.item-actions {
+.item-actions,
+.knowledge-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
 }
 
 .form-actions button,
-.item-actions button {
+.item-actions button,
+.knowledge-actions button,
+.file-pick-button {
+  position: relative;
+  overflow: hidden;
   padding: 0 12px;
+}
+
+.file-pick-button input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+}
+
+.knowledge-message {
+  padding: 10px 12px;
+  border: 1px solid #c8d5cd;
+  border-radius: 8px;
+  background: #eef7f1;
+  color: #245448;
+  font-weight: 700;
 }
 
 .risk-note {

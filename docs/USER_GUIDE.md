@@ -585,6 +585,64 @@ PUT /skills/{skill_id}
 DELETE /skills/{skill_id}
 ```
 
+### Export Memory And Skills
+
+```http
+GET /knowledge/export
+```
+
+Response:
+
+```json
+{
+  "kind": "mnemosyne_core_knowledge_export",
+  "schema_version": 1,
+  "exported_at": "2026-06-01T12:00:00+00:00",
+  "counts": {
+    "memories": 2,
+    "skills": 1
+  },
+  "memories": [],
+  "skills": []
+}
+```
+
+### Import Memory And Skills
+
+```http
+POST /knowledge/import
+```
+
+Merge import:
+
+```json
+{
+  "mode": "merge",
+  "memories": [
+    {
+      "text": "OpenClaw model inference should use openclaw infer model run --prompt.",
+      "source": "backup",
+      "tags": ["openclaw"],
+      "importance": 0.8
+    }
+  ],
+  "skills": []
+}
+```
+
+Replace import:
+
+```json
+{
+  "mode": "replace",
+  "confirm_replace": true,
+  "memories": [],
+  "skills": []
+}
+```
+
+Replace mode clears current local memory and skills before importing the supplied records. Merge mode updates matching ids, updates matching skill names, and skips exact duplicate memories.
+
 ## Tool Catalog
 
 Tools are available to the agent during runs and to trusted local users through the dashboard Tool Runner or `POST /tools/{tool_name}/execute`. The model can request tool calls only if the run contract allows that tool. Direct manual execution is intended for local testing and requires confirmation for write/terminal/elevated categories.
@@ -1036,6 +1094,40 @@ Example use cases:
 - “When comparing repositories, always include URL, purpose, license if available, and last activity.”
 - “When writing files, prefer `F:/...` paths in Windows tools.”
 
+## Knowledge Backup
+
+The dashboard has a **Knowledge Backup** panel for local memory and skills.
+
+- **Export JSON** downloads the current memory and skills.
+- **Merge** imports backup records without clearing local knowledge.
+- **Replace** restores a backup by clearing current memory and skills first; the browser asks for confirmation.
+
+The export intentionally omits generated search indexes. FTS rows and local vector embeddings are rebuilt by SQLite import/update logic, so a backup stays portable across machines and future retrieval implementations.
+
+PowerShell export:
+
+```powershell
+Invoke-RestMethod `
+  -Uri "http://127.0.0.1:8002/knowledge/export" `
+  | ConvertTo-Json -Depth 20 `
+  | Set-Content -Path "F:\mnemosyne-knowledge.json"
+```
+
+PowerShell replace import:
+
+```powershell
+$backup = Get-Content "F:\mnemosyne-knowledge.json" -Raw | ConvertFrom-Json
+$backup | Add-Member -NotePropertyName mode -NotePropertyValue "replace" -Force
+$backup | Add-Member -NotePropertyName confirm_replace -NotePropertyValue $true -Force
+$body = $backup | ConvertTo-Json -Depth 20
+
+Invoke-RestMethod `
+  -Uri "http://127.0.0.1:8002/knowledge/import" `
+  -Method Post `
+  -ContentType "application/json" `
+  -Body $body
+```
+
 ## OpenClaw Workflow Example
 
 Create a skill:
@@ -1224,5 +1316,4 @@ For WSL terminal working directories, use WSL paths:
 
 ## Recommended Next Upgrades
 
-- Add export/import for memory and skills.
 - Add a first-run setup screen for `.env` validation.

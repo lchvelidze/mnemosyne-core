@@ -34,6 +34,15 @@ Mnemosyne skills are local reusable instructions for repeatable agent workflows.
 
 The agent also has safe skill tools: `create_skill` and `list_skills`.
 
+## Knowledge Backup
+
+Memory and skills can be exported, imported, migrated, and shared as JSON:
+
+- `GET /knowledge/export`
+- `POST /knowledge/import`
+
+Imports support `merge` for additive restores and `replace` for full backup restoration with explicit confirmation.
+
 ## Full User Guide
 
 See [docs/USER_GUIDE.md](docs/USER_GUIDE.md) for the current architecture, startup commands, API examples, dashboard workflows, tool catalog, skills, memory, sandboxes, terminal/WSL usage, and troubleshooting notes.

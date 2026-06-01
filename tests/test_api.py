@@ -257,6 +257,65 @@ def test_skill_crud_endpoints_manage_searchable_skills(tmp_path: Path) -> None:
     assert all(skill["id"] != created["id"] for skill in client.get("/skills").json())
 
 
+def test_knowledge_export_and_replace_import_round_trip(tmp_path: Path) -> None:
+    source = build_client(tmp_path / "source")
+    memory = source.post(
+        "/memory",
+        json={
+            "text": "Importable memory about LFP safety.",
+            "source": "curated",
+            "tags": ["battery"],
+            "importance": 0.85,
+        },
+    ).json()
+    skill = source.post(
+        "/skills",
+        json={
+            "name": "OpenClaw Backup",
+            "description": "Run OpenClaw after restoring skills.",
+            "instructions": "Use openclaw infer model run --prompt.",
+            "trigger_terms": ["openclaw"],
+            "tool_names": ["run_terminal_command"],
+            "enabled": True,
+        },
+    ).json()
+
+    exported = source.get("/knowledge/export").json()
+    target = build_client(tmp_path / "target")
+    blocked = target.post(
+        "/knowledge/import",
+        json={**exported, "mode": "replace", "confirm_replace": False},
+    )
+    imported = target.post(
+        "/knowledge/import",
+        json={**exported, "mode": "replace", "confirm_replace": True},
+    ).json()
+    memories = target.get("/memory", params={"query": "importable LFP safety"}).json()
+    skills = target.get("/skills", params={"query": "restore openclaw"}).json()
+
+    assert exported["kind"] == "mnemosyne_core_knowledge_export"
+    assert memory["id"] in {record["id"] for record in exported["memories"]}
+    assert skill["id"] in {record["id"] for record in exported["skills"]}
+    assert blocked.status_code == 409
+    assert imported["mode"] == "replace"
+    assert imported["memories"]["created"] == len(exported["memories"])
+    assert imported["skills"]["created"] == len(exported["skills"])
+    assert memories[0]["id"] == memory["id"]
+    assert skills[0]["id"] == skill["id"]
+
+
+def test_knowledge_merge_import_is_idempotent_for_existing_records(tmp_path: Path) -> None:
+    client = build_client(tmp_path)
+    exported = client.get("/knowledge/export").json()
+
+    first = client.post("/knowledge/import", json={**exported, "mode": "merge"}).json()
+    second = client.post("/knowledge/import", json={**exported, "mode": "merge"}).json()
+
+    assert first["memories"]["updated"] >= 1
+    assert second["memories"]["updated"] >= 1
+    assert second["skills"]["created"] == 0
+
+
 def test_retry_and_cancel_run_controls(tmp_path: Path) -> None:
     client = build_client(tmp_path)
     run_id = client.post("/runs", json={"goal": "research memory"}).json()["id"]
