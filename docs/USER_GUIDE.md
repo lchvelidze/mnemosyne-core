@@ -7,8 +7,10 @@ This guide explains what Mnemosyne Core contains today, how the pieces fit toget
 Mnemosyne Core is a local-first agent control plane. The current MVP is built around a dashboard-first research agent:
 
 - A user enters a goal in the Run Console.
-- The backend creates a durable run record in SQLite.
+- The backend creates or continues a durable conversation thread in SQLite.
+- Each user goal and assistant final answer is stored as a thread message.
 - The agent retrieves local memory and relevant reusable skills.
+- The agent sends recent thread messages back into model context when continuing a thread.
 - The model chooses safe tool calls.
 - The backend executes only tools allowed by the run contract.
 - Every step is persisted as timeline events.
@@ -44,6 +46,8 @@ FastAPI Backend
         |
         +-- SQLite Database
               - runs
+              - threads
+              - thread messages
               - run contracts
               - events
               - memories + FTS + local vectors
@@ -183,34 +187,37 @@ Do not commit `.env`, local SQLite databases, logs, caches, build output, or gen
 
 ## Dashboard Workflows
 
-### Create A Run
+### Create Or Continue A Thread
 
 1. Open `http://127.0.0.1:5173/`.
-2. Enter a research goal.
-3. Open **Allowed Tools** if you want to restrict tool access.
-4. Click **Start Run**.
-5. Watch the timeline events.
-6. Inspect final answer, memory hits, contract, and eval result.
+2. Select an existing thread from the left sidebar, or click **New Chat**.
+3. Type a message in the chat composer at the bottom.
+4. Open **Allowed Tools** if you want to restrict tool access for the next run.
+5. Click **Send**.
+6. Watch the run timeline while the answer is produced.
+7. Inspect the chat transcript, final answer, memory hits, contract, and eval result.
+
+Each submitted message creates a run. If a thread is selected, the run continues that thread and recent thread messages are included in the model request. If no thread is selected, the backend creates a new thread automatically.
 
 ### Retry A Run
 
-1. Select a previous run from History.
+1. Select a previous thread from **Threads**.
 2. Click **Retry**.
-3. A new run is created using the same goal and contract.
+3. A new run is created in the same thread using the selected run's goal and contract.
 
 ### Duplicate A Goal
 
-1. Select a previous run.
+1. Select a previous thread/run.
 2. Click **Duplicate**.
-3. The old goal is copied back into the input box.
+3. The old goal is copied into the bottom chat composer.
 
 ### Cancel A Run
 
 1. Select a running run.
 2. Click **Cancel**.
-3. The run is marked cancelled in SQLite.
+3. The run is marked cancelled in SQLite and a cancellation message is appended to the thread.
 
-Current limitation: cancellation updates the run state but does not forcibly terminate every already-running subprocess in all cases. Long-running terminal/background process management is a future upgrade.
+For long-running shell work, prefer **Terminal Jobs** so status and logs persist separately from the agent run timeout.
 
 ### Add Memory
 
@@ -250,22 +257,26 @@ Preferred tools: run_terminal_command
 
 For each run, `AgentRuntime` does this:
 
-1. Creates or continues a run.
-2. Loads the run contract.
-3. Emits `plan.created`.
-4. Searches memory with local vectors and SQLite FTS fallback.
-5. Emits `memory.retrieved`.
-6. Searches skills with local vectors and SQLite FTS fallback.
-7. Emits `skills.retrieved`.
-8. Calls the model with goal, memory, skills, and allowed tools.
-9. Emits `model.started` and `model.completed`.
-10. Executes requested safe tool calls.
-11. Emits tool events such as `tool.started`, `tool.completed`, `tool.failed`, or `tool.blocked`.
-12. Calls the model again to synthesize from tool results.
-13. Emits synthesis events.
-14. Scores the answer with a local rubric eval.
-15. Emits `eval.completed`.
-16. Marks run completed or failed.
+1. Creates a new thread or validates the selected thread.
+2. Creates a run linked to that thread.
+3. Stores the user goal as a `user` thread message.
+4. Loads the run contract.
+5. Loads recent thread messages for model context.
+6. Emits `plan.created`.
+7. Searches memory with local vectors and SQLite FTS fallback.
+8. Emits `memory.retrieved`.
+9. Searches skills with local vectors and SQLite FTS fallback.
+10. Emits `skills.retrieved`.
+11. Calls the model with goal, recent thread context, memory, skills, and allowed tools.
+12. Emits `model.started` and `model.completed`.
+13. Executes requested safe tool calls.
+14. Emits tool events such as `tool.started`, `tool.completed`, `tool.failed`, or `tool.blocked`.
+15. Calls the model again to synthesize from tool results.
+16. Emits synthesis events.
+17. Scores the answer with a local rubric eval.
+18. Emits `eval.completed`.
+19. Stores the final answer as an `assistant` thread message.
+20. Marks run completed or failed.
 
 ## Eval Rubrics
 
@@ -433,6 +444,50 @@ Invoke-RestMethod `
 
 The log stream is Server-Sent Events. It emits `terminal.job.log` records for stdout/stderr/system lines and `terminal.job.status` records when the job changes status.
 
+### Create Thread
+
+```http
+POST /threads
+```
+
+Body:
+
+```json
+{
+  "title": "Battery storage research"
+}
+```
+
+PowerShell:
+
+```powershell
+$body = @{
+  title = "Battery storage research"
+} | ConvertTo-Json
+
+Invoke-RestMethod `
+  -Uri "http://127.0.0.1:8003/threads" `
+  -Method Post `
+  -ContentType "application/json" `
+  -Body $body
+```
+
+### List Threads
+
+```http
+GET /threads
+```
+
+Returns thread summaries ordered by most recently updated first.
+
+### Get Thread
+
+```http
+GET /threads/{thread_id}
+```
+
+Returns the thread summary plus ordered `messages` and linked `runs`.
+
 ### Create Run
 
 ```http
@@ -444,6 +499,7 @@ Body:
 ```json
 {
   "goal": "Compare LFP and NMC batteries for home storage safety.",
+  "thread_id": "optional-existing-thread-id",
   "constraints": "Use only selected safe tools and local memory visible in the control plane.",
   "allowed_tools": ["web_search", "http_get", "calculator"],
   "success_criteria": ["Produce a final answer", "Persist timeline events", "Create an eval record"],
@@ -451,11 +507,14 @@ Body:
 }
 ```
 
+Omit `thread_id` to create a new thread automatically. Provide `thread_id` to continue an existing thread and include recent thread messages in the model context.
+
 PowerShell:
 
 ```powershell
 $body = @{
   goal = "Compare LFP and NMC batteries for home storage safety."
+  thread_id = "optional-existing-thread-id"
   allowed_tools = @("web_search", "http_get", "calculator")
 } | ConvertTo-Json
 
@@ -1186,6 +1245,8 @@ data/mnemosyne.db
 
 Tables include:
 
+- `threads`
+- `thread_messages`
 - `runs`
 - `run_contracts`
 - `events`

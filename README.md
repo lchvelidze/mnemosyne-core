@@ -1,6 +1,6 @@
 # Mnemosyne Core
 
-Local-first agent harness MVP with a FastAPI backend, SQLite memory with local vector retrieval and FTS fallback, reusable agent skills, safe tools, terminal jobs, LiteLLM model adapter, rubric eval records, and a React/Vite run console.
+Local-first agent harness MVP with a FastAPI backend, durable chat threads, SQLite memory with local vector retrieval and FTS fallback, reusable agent skills, safe tools, terminal jobs, LiteLLM model adapter, rubric eval records, and a React/Vite run console.
 
 ## Quick Start
 
@@ -43,6 +43,15 @@ Memory and skills can be exported, imported, migrated, and shared as JSON:
 - `POST /knowledge/import`
 
 Imports support `merge` for additive restores and `replace` for full backup restoration with explicit confirmation.
+
+## Threads
+
+The dashboard sidebar shows conversation threads, not one row per run. A thread stores user goals and assistant final answers as messages, and continuing a thread sends recent messages back into the model context:
+
+- `POST /threads`
+- `GET /threads`
+- `GET /threads/{thread_id}`
+- `POST /runs` accepts optional `thread_id`
 
 ## Full User Guide
 

@@ -18,10 +18,15 @@ from mnemosyne_core.models import TaskContract
 
 class CreateRunRequest(BaseModel):
     goal: str = Field(min_length=1)
+    thread_id: str | None = None
     constraints: str | None = None
     allowed_tools: list[str] | None = None
     success_criteria: list[str] | None = None
     expected_output: str | None = None
+
+
+class CreateThreadRequest(BaseModel):
+    title: str = Field(default="New thread", min_length=1)
 
 
 class MemoryRequest(BaseModel):
@@ -100,9 +105,16 @@ def create_app(runtime: AgentRuntime, *, run_inline: bool = False) -> FastAPI:
     async def create_run(payload: CreateRunRequest) -> dict:
         contract = _contract_from_payload(runtime, payload)
         if run_inline:
-            run = await runtime.run_goal(payload.goal, contract)
+            run = await runtime.run_goal(payload.goal, contract, thread_id=payload.thread_id)
         else:
-            run = runtime.db.create_run(payload.goal, contract)
+            thread_id = _resolve_thread_id(runtime, payload.goal, payload.thread_id)
+            run = runtime.db.create_run(payload.goal, contract, thread_id=thread_id)
+            runtime.db.append_thread_message(
+                thread_id,
+                role="user",
+                content=payload.goal,
+                run_id=run.id,
+            )
             runtime.db.append_event(
                 run.id,
                 "run.created",
@@ -115,6 +127,29 @@ def create_app(runtime: AgentRuntime, *, run_inline: bool = False) -> FastAPI:
             asyncio.create_task(_continue_existing_run(runtime, run.id, payload.goal))
         return run.to_dict(runtime.db.get_eval(run.id))
 
+    @app.post("/threads", status_code=201)
+    def create_thread(payload: CreateThreadRequest) -> dict:
+        return runtime.db.create_thread(payload.title).to_dict()
+
+    @app.get("/threads")
+    def list_threads() -> list[dict]:
+        return [thread.to_dict() for thread in runtime.db.list_threads()]
+
+    @app.get("/threads/{thread_id}")
+    def get_thread(thread_id: str) -> dict:
+        thread = runtime.db.get_thread(thread_id)
+        if thread is None:
+            raise HTTPException(status_code=404, detail="Thread not found")
+        data = thread.to_dict()
+        data["messages"] = [
+            message.to_dict() for message in runtime.db.list_thread_messages(thread_id)
+        ]
+        data["runs"] = [
+            run.to_dict(runtime.db.get_eval(run.id))
+            for run in runtime.db.list_thread_runs(thread_id)
+        ]
+        return data
+
     @app.get("/runs")
     def list_runs() -> list[dict]:
         return [run.to_dict(runtime.db.get_eval(run.id)) for run in runtime.db.list_runs()]
@@ -125,10 +160,17 @@ def create_app(runtime: AgentRuntime, *, run_inline: bool = False) -> FastAPI:
         if original is None:
             raise HTTPException(status_code=404, detail="Run not found")
         contract = original.contract or default_contract(original.goal, runtime.tools.names())
+        thread_id = _resolve_thread_id(runtime, original.goal, original.thread_id)
         if run_inline:
-            run = await runtime.run_goal(original.goal, contract)
+            run = await runtime.run_goal(original.goal, contract, thread_id=thread_id)
         else:
-            run = runtime.db.create_run(original.goal, contract)
+            run = runtime.db.create_run(original.goal, contract, thread_id=thread_id)
+            runtime.db.append_thread_message(
+                thread_id,
+                role="user",
+                content=original.goal,
+                run_id=run.id,
+            )
             runtime.db.append_event(
                 run.id,
                 "run.created",
@@ -148,6 +190,13 @@ def create_app(runtime: AgentRuntime, *, run_inline: bool = False) -> FastAPI:
         if run is None:
             raise HTTPException(status_code=404, detail="Run not found")
         cancelled = runtime.db.update_run(run_id, status="cancelled", error="Cancelled by user")
+        if cancelled.thread_id:
+            runtime.db.append_thread_message(
+                cancelled.thread_id,
+                role="assistant",
+                content="Run cancelled.",
+                run_id=cancelled.id,
+            )
         runtime.db.append_event(run_id, "run.cancelled", {"status": "cancelled"})
         return cancelled.to_dict(runtime.db.get_eval(run_id))
 
@@ -403,6 +452,14 @@ def _tool_spec(runtime: AgentRuntime, tool_name: str):
 def _tool_requires_confirmation(permission_category: str) -> bool:
     risky_terms = ("write", "modify", "terminal", "elevated")
     return any(term in permission_category for term in risky_terms)
+
+
+def _resolve_thread_id(runtime: AgentRuntime, goal: str, thread_id: str | None) -> str:
+    if thread_id is None:
+        return runtime.db.create_thread(goal).id
+    if runtime.db.get_thread(thread_id) is None:
+        raise HTTPException(status_code=404, detail="Thread not found")
+    return thread_id
 
 
 async def _continue_existing_run(runtime: AgentRuntime, run_id: str, goal: str) -> None:

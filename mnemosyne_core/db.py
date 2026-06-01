@@ -9,6 +9,7 @@ from typing import Any
 
 from mnemosyne_core.models import (
     AgentRun,
+    ConversationThread,
     EvalResult,
     MemoryRecord,
     RunEvent,
@@ -16,6 +17,7 @@ from mnemosyne_core.models import (
     TaskContract,
     TerminalJob,
     TerminalJobLog,
+    ThreadMessage,
     now_iso,
 )
 from mnemosyne_core.vectors import (
@@ -38,12 +40,29 @@ class Database:
                 PRAGMA journal_mode=WAL;
                 CREATE TABLE IF NOT EXISTS runs (
                     id TEXT PRIMARY KEY,
+                    thread_id TEXT REFERENCES threads(id) ON DELETE SET NULL,
                     goal TEXT NOT NULL,
                     status TEXT NOT NULL,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     final_answer TEXT,
                     error TEXT
+                );
+                CREATE TABLE IF NOT EXISTS threads (
+                    id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS thread_messages (
+                    id TEXT PRIMARY KEY,
+                    thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+                    sequence INTEGER NOT NULL,
+                    role TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    run_id TEXT REFERENCES runs(id) ON DELETE SET NULL,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(thread_id, sequence)
                 );
                 CREATE TABLE IF NOT EXISTS run_contracts (
                     run_id TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,
@@ -154,6 +173,8 @@ class Database:
                 "evaluator_version",
                 "TEXT NOT NULL DEFAULT 'legacy'",
             )
+            self._ensure_column(conn, "runs", "thread_id", "TEXT REFERENCES threads(id)")
+            self._backfill_threads(conn)
             self._backfill_vectors(conn)
 
     def connect(self) -> sqlite3.Connection:
@@ -162,7 +183,13 @@ class Database:
         conn.execute("PRAGMA foreign_keys=ON")
         return conn
 
-    def create_run(self, goal: str, contract: TaskContract | None = None) -> AgentRun:
+    def create_run(
+        self,
+        goal: str,
+        contract: TaskContract | None = None,
+        *,
+        thread_id: str | None = None,
+    ) -> AgentRun:
         timestamp = now_iso()
         contract = contract or default_contract(goal, [])
         run = AgentRun(
@@ -171,16 +198,19 @@ class Database:
             status="running",
             created_at=timestamp,
             updated_at=timestamp,
+            thread_id=thread_id,
             contract=contract,
         )
         with self.connect() as conn:
             conn.execute(
                 """
-                INSERT INTO runs (id, goal, status, created_at, updated_at, final_answer, error)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO runs
+                (id, thread_id, goal, status, created_at, updated_at, final_answer, error)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run.id,
+                    run.thread_id,
                     run.goal,
                     run.status,
                     run.created_at,
@@ -204,6 +234,122 @@ class Database:
                 ),
             )
         return run
+
+    def create_thread(self, title: str) -> ConversationThread:
+        timestamp = now_iso()
+        thread = ConversationThread(
+            id=str(uuid.uuid4()),
+            title=self._thread_title(title),
+            created_at=timestamp,
+            updated_at=timestamp,
+        )
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO threads (id, title, created_at, updated_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (thread.id, thread.title, thread.created_at, thread.updated_at),
+            )
+        return thread
+
+    def get_thread(self, thread_id: str) -> ConversationThread | None:
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM threads WHERE id = ?", (thread_id,)).fetchone()
+        return self._thread_from_row(row) if row else None
+
+    def list_threads(self) -> list[ConversationThread]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM threads ORDER BY updated_at DESC, created_at DESC"
+            ).fetchall()
+        return [self._thread_from_row(row) for row in rows]
+
+    def append_thread_message(
+        self,
+        thread_id: str,
+        *,
+        role: str,
+        content: str,
+        run_id: str | None = None,
+    ) -> ThreadMessage:
+        if role not in {"user", "assistant", "system"}:
+            raise ValueError(f"Unsupported thread message role: {role}")
+        timestamp = now_iso()
+        with self.connect() as conn:
+            if conn.execute("SELECT id FROM threads WHERE id = ?", (thread_id,)).fetchone() is None:
+                raise ValueError(f"Thread not found: {thread_id}")
+            sequence = conn.execute(
+                "SELECT COALESCE(MAX(sequence), 0) + 1 FROM thread_messages WHERE thread_id = ?",
+                (thread_id,),
+            ).fetchone()[0]
+            message = ThreadMessage(
+                id=str(uuid.uuid4()),
+                thread_id=thread_id,
+                sequence=sequence,
+                role=role,
+                content=content,
+                run_id=run_id,
+                created_at=timestamp,
+            )
+            conn.execute(
+                """
+                INSERT INTO thread_messages
+                (id, thread_id, sequence, role, content, run_id, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    message.id,
+                    message.thread_id,
+                    message.sequence,
+                    message.role,
+                    message.content,
+                    message.run_id,
+                    message.created_at,
+                ),
+            )
+            conn.execute(
+                "UPDATE threads SET updated_at = ? WHERE id = ?",
+                (timestamp, thread_id),
+            )
+        return message
+
+    def list_thread_messages(self, thread_id: str) -> list[ThreadMessage]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM thread_messages
+                WHERE thread_id = ?
+                ORDER BY sequence ASC
+                """,
+                (thread_id,),
+            ).fetchall()
+        return [self._thread_message_from_row(row) for row in rows]
+
+    def recent_thread_messages(self, thread_id: str, limit: int = 12) -> list[ThreadMessage]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM thread_messages
+                WHERE thread_id = ?
+                ORDER BY sequence DESC
+                LIMIT ?
+                """,
+                (thread_id, limit),
+            ).fetchall()
+        return [self._thread_message_from_row(row) for row in reversed(rows)]
+
+    def list_thread_runs(self, thread_id: str) -> list[AgentRun]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM runs
+                WHERE thread_id = ?
+                ORDER BY created_at DESC
+                """,
+                (thread_id,),
+            ).fetchall()
+        return [self._run_from_row(row) for row in rows]
 
     def update_run(
         self,
@@ -928,6 +1074,7 @@ class Database:
             status=row["status"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
+            thread_id=row["thread_id"],
             final_answer=row["final_answer"],
             error=row["error"],
             contract=self._contract_from_row(row["goal"], contract_row) if contract_row else None,
@@ -958,6 +1105,27 @@ class Database:
             sequence=row["sequence"],
             event_type=row["event_type"],
             payload=json.loads(row["payload"]),
+            created_at=row["created_at"],
+        )
+
+    @staticmethod
+    def _thread_from_row(row: sqlite3.Row) -> ConversationThread:
+        return ConversationThread(
+            id=row["id"],
+            title=row["title"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
+    @staticmethod
+    def _thread_message_from_row(row: sqlite3.Row) -> ThreadMessage:
+        return ThreadMessage(
+            id=row["id"],
+            thread_id=row["thread_id"],
+            sequence=row["sequence"],
+            role=row["role"],
+            content=row["content"],
+            run_id=row["run_id"],
             created_at=row["created_at"],
         )
 
@@ -1234,6 +1402,59 @@ class Database:
         for row in skill_rows:
             self._upsert_skill_vector(conn, self._skill_from_row(row))
 
+    def _backfill_threads(self, conn: sqlite3.Connection) -> None:
+        run_rows = conn.execute(
+            """
+            SELECT * FROM runs
+            WHERE thread_id IS NULL
+            ORDER BY created_at ASC
+            """
+        ).fetchall()
+        for row in run_rows:
+            thread_id = str(uuid.uuid4())
+            title = self._thread_title(row["goal"])
+            conn.execute(
+                """
+                INSERT INTO threads (id, title, created_at, updated_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (thread_id, title, row["created_at"], row["updated_at"]),
+            )
+            conn.execute("UPDATE runs SET thread_id = ? WHERE id = ?", (thread_id, row["id"]))
+            conn.execute(
+                """
+                INSERT INTO thread_messages
+                (id, thread_id, sequence, role, content, run_id, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(uuid.uuid4()),
+                    thread_id,
+                    1,
+                    "user",
+                    row["goal"],
+                    row["id"],
+                    row["created_at"],
+                ),
+            )
+            if row["final_answer"]:
+                conn.execute(
+                    """
+                    INSERT INTO thread_messages
+                    (id, thread_id, sequence, role, content, run_id, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        str(uuid.uuid4()),
+                        thread_id,
+                        2,
+                        "assistant",
+                        row["final_answer"],
+                        row["id"],
+                        row["updated_at"],
+                    ),
+                )
+
     @staticmethod
     def _eval_from_row(row: sqlite3.Row) -> EvalResult:
         return EvalResult(
@@ -1256,6 +1477,13 @@ class Database:
         columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
         if column not in columns:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+    @staticmethod
+    def _thread_title(text: str) -> str:
+        compact = " ".join(text.strip().split())
+        if not compact:
+            return "Untitled thread"
+        return compact[:80]
 
 
 def default_contract(goal: str, allowed_tools: list[str]) -> TaskContract:

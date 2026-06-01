@@ -27,6 +27,8 @@ import ReactMarkdown from "react-markdown";
 import {
   API_BASE,
   AgentRun,
+  ConversationThread,
+  ConversationThreadDetail,
   MemoryRecord,
   RunEvent,
   SkillRecord,
@@ -47,11 +49,12 @@ import {
   getRunMemory,
   getTerminalJob,
   getTerminalJobLogs,
+  getThread,
   importKnowledge as importKnowledgePayload,
   listMemory,
-  listRuns,
   listSkills,
   listTerminalJobs,
+  listThreads,
   listTools,
   retryRun,
   updateSkill,
@@ -71,7 +74,8 @@ function eventIcon(type: string) {
 
 export default function App() {
   const [goal, setGoal] = useState("");
-  const [runs, setRuns] = useState<AgentRun[]>([]);
+  const [threads, setThreads] = useState<ConversationThread[]>([]);
+  const [selectedThread, setSelectedThread] = useState<ConversationThreadDetail | null>(null);
   const [selectedRun, setSelectedRun] = useState<AgentRun | null>(null);
   const [events, setEvents] = useState<TimelineEvent[]>([]);
   const [memories, setMemories] = useState<MemoryRecord[]>([]);
@@ -149,12 +153,34 @@ export default function App() {
     setSelectedRun(run);
     setMemories(runMemory);
     setEvents(timelineEvents);
+    return run;
   }, []);
 
-  const refreshRuns = useCallback(async () => {
-    const history = await listRuns();
-    setRuns(history);
+  const refreshThreads = useCallback(async () => {
+    const threadRecords = await listThreads();
+    setThreads(threadRecords);
+    return threadRecords;
   }, []);
+
+  const loadThread = useCallback(
+    async (threadId: string) => {
+      const thread = await getThread(threadId);
+      setSelectedThread(thread);
+      setThreads((current) => {
+        const others = current.filter((item) => item.id !== thread.id);
+        return [thread, ...others].sort((left, right) => right.updated_at.localeCompare(left.updated_at));
+      });
+      if (thread.runs.length > 0) {
+        await loadRun(thread.runs[0].id);
+      } else {
+        setSelectedRun(null);
+        setEvents([]);
+        setMemories([]);
+      }
+      return thread;
+    },
+    [loadRun],
+  );
 
   const refreshTerminalJobs = useCallback(async () => {
     const jobs = await listTerminalJobs();
@@ -162,11 +188,11 @@ export default function App() {
   }, []);
 
   const initializeRuns = useCallback(async () => {
-    const [toolCatalog, memoryRecords, skillRecords, history, jobs] = await Promise.all([
+    const [toolCatalog, memoryRecords, skillRecords, threadRecords, jobs] = await Promise.all([
       listTools(),
       listMemory(),
       listSkills(),
-      listRuns(),
+      listThreads(),
       listTerminalJobs(),
     ]);
     setTools(toolCatalog);
@@ -179,11 +205,11 @@ export default function App() {
     if (jobs[0]) {
       setTerminalJobLogs(await getTerminalJobLogs(jobs[0].id));
     }
-    setRuns(history);
-    if (history.length > 0) {
-      await loadRun(history[0].id);
+    setThreads(threadRecords);
+    if (threadRecords.length > 0) {
+      await loadThread(threadRecords[0].id);
     }
-  }, [loadRun]);
+  }, [loadThread]);
 
   useEffect(() => {
     initializeRuns().catch((caught: unknown) => setError(String(caught)));
@@ -204,6 +230,7 @@ export default function App() {
     try {
       const allowedTools = selectedTools.length > 0 ? selectedTools : tools.map((tool) => tool.name);
       const run = await createRun(trimmed, {
+        thread_id: selectedThread?.id ?? null,
         constraints: "Use only selected safe tools and local memory visible in the control plane.",
         allowed_tools: allowedTools,
         success_criteria: ["Produce a final answer", "Persist timeline events", "Create an eval record"],
@@ -212,7 +239,8 @@ export default function App() {
       setSelectedRun(run);
       setGoal("");
       setIsToolMenuOpen(false);
-      await refreshRuns();
+      await refreshThreads();
+      if (run.thread_id) await loadThread(run.thread_id);
       attachEventStream(run.id);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
@@ -262,8 +290,10 @@ export default function App() {
         }
         if (type === "run.completed" || type === "run.failed") {
           source.close();
-          void loadRun(runId);
-          void refreshRuns();
+          void loadRun(runId).then((run) => {
+            if (run.thread_id) void loadThread(run.thread_id);
+          });
+          void refreshThreads();
         }
       });
     }
@@ -272,15 +302,24 @@ export default function App() {
     };
   }
 
-  async function handleHistoryClick(runId: string) {
+  async function handleThreadClick(threadId: string) {
     setError(null);
     setEvents([]);
     eventSourceRef.current?.close();
     try {
-      await loadRun(runId);
+      await loadThread(threadId);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
     }
+  }
+
+  function handleNewThread() {
+    eventSourceRef.current?.close();
+    setSelectedThread(null);
+    setSelectedRun(null);
+    setEvents([]);
+    setMemories([]);
+    setGoal("");
   }
 
   function handleToolToggle(toolName: string) {
@@ -430,6 +469,7 @@ export default function App() {
       const [memoryRecords, skillRecords] = await Promise.all([listMemory(), listSkills()]);
       setAllMemories(memoryRecords);
       setSkills(skillRecords);
+      await refreshThreads();
       setKnowledgeMessage(
         `Imported ${summary.memories.created + summary.memories.updated} memory changes and ${
           summary.skills.created + summary.skills.updated
@@ -577,7 +617,7 @@ export default function App() {
       setSelectedRun(run);
       setEvents([]);
       setMemories([]);
-      await refreshRuns();
+      await refreshThreads();
       attachEventStream(run.id);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
@@ -592,7 +632,7 @@ export default function App() {
       setSelectedRun(run);
       eventSourceRef.current?.close();
       await loadRun(run.id);
-      await refreshRuns();
+      await refreshThreads();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
     }
@@ -613,24 +653,28 @@ export default function App() {
       </section>
 
       <section className="console-grid" aria-label="Run console workspace">
-        <aside className="history-panel" aria-label="Run history">
+        <aside className="history-panel" aria-label="Thread list">
           <div className="panel-heading">
             <History aria-hidden="true" />
-            <h2>History</h2>
+            <h2>Threads</h2>
           </div>
+          <button className="new-thread-button" onClick={handleNewThread} type="button">
+            <Plus aria-hidden="true" />
+            <span>New Chat</span>
+          </button>
           <div className="history-list">
-            {runs.length === 0 ? (
-              <p className="muted">No runs yet.</p>
+            {threads.length === 0 ? (
+              <p className="muted">No threads yet.</p>
             ) : (
-              runs.map((run) => (
+              threads.map((thread) => (
                 <button
-                  className={`history-row ${selectedRun?.id === run.id ? "selected" : ""}`}
-                  key={run.id}
-                  onClick={() => void handleHistoryClick(run.id)}
+                  className={`history-row ${selectedThread?.id === thread.id ? "selected" : ""}`}
+                  key={thread.id}
+                  onClick={() => void handleThreadClick(thread.id)}
                   type="button"
                 >
-                  <span>{run.goal}</span>
-                  <small>{run.status}</small>
+                  <span>{thread.title}</span>
+                  <small>{new Date(thread.updated_at).toLocaleString()}</small>
                 </button>
               ))
             )}
@@ -638,93 +682,45 @@ export default function App() {
         </aside>
 
         <section className="work-panel">
-          <form className="goal-form" onSubmit={(event) => void handleSubmit(event)}>
-            <label htmlFor="goal">Research goal</label>
-            <div className="goal-entry">
-              <textarea
-                id="goal"
-                value={goal}
-                onChange={(event) => setGoal(event.target.value)}
-                placeholder="Compare LFP and NMC batteries for home storage safety."
-                rows={3}
-              />
-              <button disabled={isCreating || goal.trim().length === 0} type="submit">
-                <Play aria-hidden="true" />
-                <span>{isCreating ? "Starting" : "Start Run"}</span>
-              </button>
-            </div>
-            <fieldset className="tool-selector">
-              <legend>Allowed Tools</legend>
-              <button
-                aria-controls="allowed-tools-menu"
-                aria-expanded={isToolMenuOpen}
-                className="tool-menu-trigger"
-                onClick={() => setIsToolMenuOpen((open) => !open)}
-                type="button"
-              >
-                <span className="tool-trigger-icon">
-                  <Wrench aria-hidden="true" />
-                </span>
-                <span className="tool-trigger-copy">
-                  <strong>Allowed Tools</strong>
-                  <small>{selectedToolSummary}</small>
-                </span>
-                <ChevronDown aria-hidden="true" className={isToolMenuOpen ? "open" : ""} />
-              </button>
-              {isToolMenuOpen ? (
-                <div className="tool-menu-panel" id="allowed-tools-menu">
-                  <div className="tool-menu-toolbar">
-                    <span>{selectedToolSummary}</span>
-                    <div>
-                      <button onClick={handleSelectAllTools} type="button">
-                        Select all
-                      </button>
-                      <button onClick={handleClearTools} type="button">
-                        Clear
-                      </button>
-                    </div>
-                  </div>
-                  <div className="tool-menu-list">
-                    {toolGroups.map((group) => (
-                      <section className="tool-group" key={group.permission}>
-                        <h3>{group.permission}</h3>
-                        <div className="tool-group-list">
-                          {group.tools.map((tool) => (
-                            <label className="tool-option" key={tool.name} title={tool.description}>
-                              <input
-                                checked={selectedTools.includes(tool.name)}
-                                onChange={() => handleToolToggle(tool.name)}
-                                type="checkbox"
-                              />
-                              <span>
-                                <strong>{tool.name}</strong>
-                                <small>{tool.description}</small>
-                              </span>
-                            </label>
-                          ))}
-                        </div>
-                      </section>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
-            </fieldset>
-          </form>
-
           {error ? <div className="error-strip">{error}</div> : null}
 
           <div className="result-grid">
             <section className="timeline-panel" aria-label="Run timeline">
               <div className="panel-heading">
                 <Activity aria-hidden="true" />
-                <h2>Timeline</h2>
+                <h2>Thread</h2>
               </div>
+              {selectedThread ? (
+                <div className="selected-run-strip">
+                  <strong>Selected thread</strong>
+                  <span>{selectedThread.title}</span>
+                </div>
+              ) : null}
+              {selectedThread?.messages.length ? (
+                <ol className="chat-list" aria-label="Thread messages">
+                  {selectedThread.messages.map((message) => (
+                    <li className={`chat-message ${message.role}`} key={message.id}>
+                      <strong>{message.role}</strong>
+                      <ReactMarkdown>{cleanFinalAnswerForDisplay(message.content)}</ReactMarkdown>
+                    </li>
+                  ))}
+                </ol>
+              ) : (
+                <div className="empty-state compact">
+                  <Search aria-hidden="true" />
+                  <p>Start a new chat or select a thread to continue the conversation.</p>
+                </div>
+              )}
               {selectedRun ? (
                 <div className="selected-run-strip">
                   <strong>Selected run</strong>
                   <span>{selectedRun.goal}</span>
                 </div>
               ) : null}
+              <div className="panel-heading timeline-heading">
+                <Activity aria-hidden="true" />
+                <h2>Run Timeline</h2>
+              </div>
               {events.length === 0 ? (
                 <div className="empty-state">
                   <Search aria-hidden="true" />
@@ -1143,6 +1139,78 @@ export default function App() {
               </div>
             </section>
           </div>
+          <form className="goal-form chat-composer" onSubmit={(event) => void handleSubmit(event)}>
+            <label htmlFor="goal">{selectedThread ? `Message ${selectedThread.title}` : "New chat message"}</label>
+            <div className="goal-entry">
+              <textarea
+                id="goal"
+                value={goal}
+                onChange={(event) => setGoal(event.target.value)}
+                placeholder="Ask the next question in this thread..."
+                rows={3}
+              />
+              <button disabled={isCreating || goal.trim().length === 0} type="submit">
+                <Play aria-hidden="true" />
+                <span>{isCreating ? "Sending" : "Send"}</span>
+              </button>
+            </div>
+            <fieldset className="tool-selector">
+              <legend>Allowed Tools</legend>
+              <button
+                aria-controls="allowed-tools-menu"
+                aria-expanded={isToolMenuOpen}
+                className="tool-menu-trigger"
+                onClick={() => setIsToolMenuOpen((open) => !open)}
+                type="button"
+              >
+                <span className="tool-trigger-icon">
+                  <Wrench aria-hidden="true" />
+                </span>
+                <span className="tool-trigger-copy">
+                  <strong>Allowed Tools</strong>
+                  <small>{selectedToolSummary}</small>
+                </span>
+                <ChevronDown aria-hidden="true" className={isToolMenuOpen ? "open" : ""} />
+              </button>
+              {isToolMenuOpen ? (
+                <div className="tool-menu-panel" id="allowed-tools-menu">
+                  <div className="tool-menu-toolbar">
+                    <span>{selectedToolSummary}</span>
+                    <div>
+                      <button onClick={handleSelectAllTools} type="button">
+                        Select all
+                      </button>
+                      <button onClick={handleClearTools} type="button">
+                        Clear
+                      </button>
+                    </div>
+                  </div>
+                  <div className="tool-menu-list">
+                    {toolGroups.map((group) => (
+                      <section className="tool-group" key={group.permission}>
+                        <h3>{group.permission}</h3>
+                        <div className="tool-group-list">
+                          {group.tools.map((tool) => (
+                            <label className="tool-option" key={tool.name} title={tool.description}>
+                              <input
+                                checked={selectedTools.includes(tool.name)}
+                                onChange={() => handleToolToggle(tool.name)}
+                                type="checkbox"
+                              />
+                              <span>
+                                <strong>{tool.name}</strong>
+                                <small>{tool.description}</small>
+                              </span>
+                            </label>
+                          ))}
+                        </div>
+                      </section>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+            </fieldset>
+          </form>
         </section>
       </section>
     </main>

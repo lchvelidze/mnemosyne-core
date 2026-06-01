@@ -9,7 +9,7 @@ from typing import Any, Protocol
 from litellm import acompletion
 
 from mnemosyne_core.config import Settings
-from mnemosyne_core.models import MemoryRecord, SkillRecord, ToolSpec
+from mnemosyne_core.models import MemoryRecord, SkillRecord, ThreadMessage, ToolSpec
 
 
 @dataclass(frozen=True)
@@ -25,6 +25,7 @@ class ModelRequest:
     tools: list[ToolSpec]
     skills: list[SkillRecord] = field(default_factory=list)
     tool_results: list[dict[str, Any]] = field(default_factory=list)
+    conversation_messages: list[ThreadMessage] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -66,6 +67,12 @@ class LiteLLMModelClient:
         )
         tool_results_text = (
             json.dumps(request.tool_results, indent=2) if request.tool_results else "none yet"
+        )
+        conversation_text = (
+            "\n".join(
+                f"- {message.role}: {message.content}" for message in request.conversation_messages
+            )
+            or "- none"
         )
         tools_payload = [
             {
@@ -109,6 +116,7 @@ class LiteLLMModelClient:
                     "role": "user",
                     "content": (
                         f"Goal: {request.goal}\n\nRelevant memory:\n{memory_text}\n\n"
+                        f"Recent thread context:\n{conversation_text}\n\n"
                         f"Relevant skills:\n{skill_text}\n\n"
                         f"Available safe tools:\n{tool_catalog}\n\n"
                         f"Tool results already collected:\n{tool_results_text}\n\n"

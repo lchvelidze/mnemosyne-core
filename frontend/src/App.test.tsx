@@ -43,6 +43,7 @@ describe("Run Console", () => {
             id: "run-2",
             status: "running",
             goal: body.goal,
+            thread_id: body.thread_id ?? "thread-2",
             contract: {
               goal: body.goal,
               constraints: body.constraints,
@@ -51,6 +52,84 @@ describe("Run Console", () => {
               expected_output: body.expected_output,
             },
           });
+        }
+        if (url.endsWith("/threads/thread-1")) {
+          return Response.json({
+            id: "thread-1",
+            title: "research battery safety",
+            created_at: "2026-05-08T12:00:00Z",
+            updated_at: "2026-05-08T12:00:10Z",
+            messages: [
+              {
+                id: "msg-1",
+                thread_id: "thread-1",
+                sequence: 1,
+                role: "user",
+                content: "research battery safety",
+                run_id: "run-1",
+                created_at: "2026-05-08T12:00:00Z",
+              },
+              {
+                id: "msg-2",
+                thread_id: "thread-1",
+                sequence: 2,
+                role: "assistant",
+                content:
+                  "## Battery Safety\n\n- [LFP batteries](https://example.com/lfp) are a safety-oriented choice.",
+                run_id: "run-1",
+                created_at: "2026-05-08T12:00:10Z",
+              },
+            ],
+            runs: [
+              {
+                id: "run-1",
+                goal: "research battery safety",
+                status: "completed",
+                thread_id: "thread-1",
+                created_at: "2026-05-08T12:00:00Z",
+                final_answer:
+                  "## Battery Safety\n\n- [LFP batteries](https://example.com/lfp) are a safety-oriented choice.",
+              },
+            ],
+          });
+        }
+        if (url.endsWith("/threads/thread-2")) {
+          return Response.json({
+            id: "thread-2",
+            title: "research battery safety",
+            created_at: "2026-05-08T12:01:00Z",
+            updated_at: "2026-05-08T12:01:00Z",
+            messages: [
+              {
+                id: "msg-3",
+                thread_id: "thread-2",
+                sequence: 1,
+                role: "user",
+                content: "research battery safety",
+                run_id: "run-2",
+                created_at: "2026-05-08T12:01:00Z",
+              },
+            ],
+            runs: [
+              {
+                id: "run-2",
+                goal: "research battery safety",
+                status: "running",
+                thread_id: "thread-2",
+                created_at: "2026-05-08T12:01:00Z",
+              },
+            ],
+          });
+        }
+        if (url.endsWith("/threads")) {
+          return Response.json([
+            {
+              id: "thread-1",
+              title: "research battery safety",
+              created_at: "2026-05-08T12:00:00Z",
+              updated_at: "2026-05-08T12:00:10Z",
+            },
+          ]);
         }
         if (url.endsWith("/tools")) {
           return Response.json([
@@ -259,10 +338,20 @@ describe("Run Console", () => {
           ]);
         }
         if (url.endsWith("/runs/run-1/retry")) {
-          return Response.json({ id: "run-3", status: "running", goal: "research battery safety" });
+          return Response.json({
+            id: "run-3",
+            status: "running",
+            goal: "research battery safety",
+            thread_id: "thread-1",
+          });
         }
         if (url.endsWith("/runs/run-1/cancel") || url.endsWith("/runs/run-3/cancel")) {
-          return Response.json({ id: "run-3", status: "cancelled", goal: "research battery safety" });
+          return Response.json({
+            id: "run-3",
+            status: "cancelled",
+            goal: "research battery safety",
+            thread_id: "thread-1",
+          });
         }
         if (url.endsWith("/runs")) {
           return Response.json([
@@ -270,6 +359,7 @@ describe("Run Console", () => {
               id: "run-1",
               goal: "research battery safety",
               status: "completed",
+              thread_id: "thread-1",
               created_at: "2026-05-08T12:00:00Z",
               final_answer: "LFP batteries are a safety-oriented choice.",
               contract: {
@@ -287,6 +377,7 @@ describe("Run Console", () => {
             id: url.split("/").pop(),
             goal: "research battery safety",
             status: "completed",
+            thread_id: url.includes("run-2") ? "thread-2" : "thread-1",
             created_at: "2026-05-08T12:00:00Z",
             final_answer:
               "## Battery Safety\n\n- [LFP batteries](https://example.com/lfp) are a safety-oriented choice.",
@@ -375,8 +466,8 @@ describe("Run Console", () => {
   it("creates a run and renders timeline events, memory, answer, and eval", async () => {
     render(<App />);
 
-    await userEvent.type(screen.getByLabelText(/research goal/i), "research battery safety");
-    await userEvent.click(screen.getByRole("button", { name: /start run/i }));
+    await userEvent.type(await screen.findByLabelText(/^message /i), "research battery safety");
+    await userEvent.click(screen.getByRole("button", { name: /send/i }));
 
     await waitFor(() => expect(MockEventSource.instances).toHaveLength(1));
     await waitFor(() => expect(MockEventSource.instances[0].listeners["run.completed"]).toHaveLength(1));
@@ -390,8 +481,8 @@ describe("Run Console", () => {
       });
     });
 
-    expect(await screen.findByText("memory.retrieved")).toBeInTheDocument();
-    expect(screen.getByText("tool.completed")).toBeInTheDocument();
+    expect((await screen.findAllByText("memory.retrieved"))[0]).toBeInTheDocument();
+    expect(screen.getAllByText("tool.completed")[0]).toBeInTheDocument();
 
     act(() => {
       MockEventSource.instances[0].emit("run.completed", {
@@ -400,7 +491,9 @@ describe("Run Console", () => {
       });
     });
 
-    expect(await screen.findByRole("heading", { name: "Battery Safety" })).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getAllByRole("heading", { name: "Battery Safety" }).length).toBeGreaterThan(0),
+    );
     expect(await screen.findByRole("link", { name: /LFP batteries/i })).toHaveAttribute(
       "href",
       "https://example.com/lfp",
@@ -410,12 +503,12 @@ describe("Run Console", () => {
     expect(await screen.findByText("Grounding")).toBeInTheDocument();
   });
 
-  it("can reopen a previous run from history", async () => {
+  it("can reopen a previous thread from the sidebar", async () => {
     render(<App />);
 
     await userEvent.click(await screen.findByRole("button", { name: /research battery safety/i }));
 
-    expect(await screen.findByRole("heading", { name: "Battery Safety" })).toBeInTheDocument();
+    expect((await screen.findAllByRole("heading", { name: "Battery Safety" }))[0]).toBeInTheDocument();
     expect(await screen.findByText("tool.completed")).toBeInTheDocument();
     expect(await screen.findByText(/Grounded and inspectable/i)).toBeInTheDocument();
   });
@@ -423,7 +516,7 @@ describe("Run Console", () => {
   it("loads the latest run details on startup", async () => {
     render(<App />);
 
-    expect(await screen.findByRole("heading", { name: "Battery Safety" })).toBeInTheDocument();
+    expect((await screen.findAllByRole("heading", { name: "Battery Safety" }))[0]).toBeInTheDocument();
     expect(await screen.findByText("plan.created")).toBeInTheDocument();
     expect(await screen.findByText(/Use only safe tools/i)).toBeInTheDocument();
     expect(await screen.findByText("tool.completed")).toBeInTheDocument();
@@ -436,8 +529,8 @@ describe("Run Console", () => {
 
     await userEvent.click(await screen.findByRole("button", { name: /allowed tools/i }));
     await userEvent.click(await screen.findByLabelText(/web_search/i));
-    await userEvent.type(screen.getByLabelText(/research goal/i), "research battery safety");
-    await userEvent.click(screen.getByRole("button", { name: /start run/i }));
+    await userEvent.type(screen.getByLabelText(/^message /i), "research battery safety");
+    await userEvent.click(screen.getByRole("button", { name: /send/i }));
 
     await waitFor(() => {
       const createCall = fetchMock.mock.calls.find(
@@ -644,7 +737,7 @@ describe("Run Console", () => {
     render(<App />);
 
     await userEvent.click(await screen.findByRole("button", { name: /duplicate/i }));
-    expect(screen.getByLabelText(/research goal/i)).toHaveValue("research battery safety");
+    expect(screen.getByLabelText(/^message /i)).toHaveValue("research battery safety");
 
     await userEvent.click(screen.getByRole("button", { name: /retry/i }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("/runs/run-1/retry"), expect.anything()));

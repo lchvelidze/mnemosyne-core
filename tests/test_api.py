@@ -16,8 +16,13 @@ from mnemosyne_core.tools import ToolRegistry
 
 class StubModelClient:
     configured = True
+    requests: list[ModelRequest]
+
+    def __init__(self) -> None:
+        self.requests = []
 
     async def complete(self, request: ModelRequest) -> ModelResponse:
+        self.requests.append(request)
         if request.tool_results:
             return ModelResponse(message=f"Answer for {request.goal}", tool_calls=[])
         return ModelResponse(
@@ -68,6 +73,7 @@ def test_post_run_creates_completed_run_and_history_survives_reopen(tmp_path: Pa
 
     run = client.get(f"/runs/{run_id}").json()
     assert run["status"] == "completed"
+    assert run["thread_id"]
     assert run["final_answer"] == "Answer for research memory"
     assert run["eval"]["evaluator_version"] == "local-rubric-v2"
     assert any(dimension["name"] == "success_criteria" for dimension in run["eval"]["rubric"])
@@ -77,6 +83,38 @@ def test_post_run_creates_completed_run_and_history_survives_reopen(tmp_path: Pa
 
     reopened = build_client(tmp_path)
     assert reopened.get("/runs").json()[0]["id"] == run_id
+
+
+def test_threads_store_messages_and_continue_context(tmp_path: Path) -> None:
+    client = build_client(tmp_path)
+
+    thread = client.post("/threads", json={"title": "OpenClaw setup"}).json()
+    first = client.post(
+        "/runs",
+        json={"goal": "remember this project uses OpenClaw", "thread_id": thread["id"]},
+    ).json()
+    second = client.post(
+        "/runs",
+        json={"goal": "what did I say this project uses?", "thread_id": thread["id"]},
+    ).json()
+    detail = client.get(f"/threads/{thread['id']}").json()
+    model_client = client.app.state.runtime.model_client
+
+    assert first["thread_id"] == thread["id"]
+    assert second["thread_id"] == thread["id"]
+    assert [message["role"] for message in detail["messages"]] == [
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+    ]
+    assert detail["messages"][0]["content"] == "remember this project uses OpenClaw"
+    assert detail["messages"][2]["content"] == "what did I say this project uses?"
+    assert detail["runs"][0]["id"] == second["id"]
+    assert any(
+        message.content == "remember this project uses OpenClaw"
+        for message in model_client.requests[-1].conversation_messages
+    )
 
 
 def test_events_endpoint_returns_sse_ordered_events(tmp_path: Path) -> None:

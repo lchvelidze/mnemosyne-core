@@ -146,6 +146,26 @@ h3 {
   gap: 8px;
 }
 
+.new-thread-button {
+  width: 100%;
+  min-height: 38px;
+  margin-bottom: 12px;
+  border: 1px solid #2f6a59;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: #eef7f1;
+  color: #19362f;
+  font-weight: 800;
+}
+
+.new-thread-button svg {
+  width: 16px;
+  height: 16px;
+}
+
 .history-row {
   width: 100%;
   min-height: 58px;
@@ -185,6 +205,12 @@ h3 {
 
 .goal-form {
   margin-bottom: 18px;
+}
+
+.chat-composer {
+  margin: 18px 0 0;
+  padding-top: 16px;
+  border-top: 1px solid #d8e1da;
 }
 
 .goal-form label {
@@ -458,6 +484,11 @@ textarea:focus {
   background: #f9fbf8;
 }
 
+.empty-state.compact {
+  min-height: 130px;
+  margin-bottom: 12px;
+}
+
 .empty-state svg {
   width: 32px;
   height: 32px;
@@ -479,6 +510,56 @@ textarea:focus {
   border: 1px solid #d8e1da;
   border-radius: 8px;
   background: #f9fbf8;
+}
+
+.timeline-heading {
+  margin-top: 16px;
+}
+
+.chat-list {
+  list-style: none;
+  display: grid;
+  gap: 10px;
+  max-height: 420px;
+  overflow: auto;
+  padding: 0;
+  margin: 0 0 14px;
+}
+
+.chat-message {
+  max-width: min(760px, 100%);
+  padding: 10px 12px;
+  border: 1px solid #d8e1da;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.chat-message.user {
+  justify-self: end;
+  border-color: #9bcfbc;
+  background: #eef7f1;
+}
+
+.chat-message.assistant {
+  justify-self: start;
+}
+
+.chat-message strong {
+  display: block;
+  margin-bottom: 6px;
+  color: #5a6860;
+  font-size: 0.76rem;
+  text-transform: uppercase;
+}
+
+.chat-message p,
+.chat-message ul,
+.chat-message ol {
+  margin: 0 0 8px;
+}
+
+.chat-message :last-child {
+  margin-bottom: 0;
 }
 
 .selected-run-strip strong {

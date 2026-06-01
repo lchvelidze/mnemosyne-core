@@ -30,9 +30,17 @@ class AgentRuntime:
         self.skills = skills
         self.jobs = jobs
 
-    async def run_goal(self, goal: str, contract: TaskContract | None = None) -> AgentRun:
+    async def run_goal(
+        self,
+        goal: str,
+        contract: TaskContract | None = None,
+        *,
+        thread_id: str | None = None,
+    ) -> AgentRun:
         contract = contract or default_contract(goal, self.tools.names())
-        run = self.db.create_run(goal, contract)
+        thread_id = self._ensure_thread(goal, thread_id)
+        run = self.db.create_run(goal, contract, thread_id=thread_id)
+        self.db.append_thread_message(thread_id, role="user", content=goal, run_id=run.id)
         self.db.append_event(
             run.id,
             "run.created",
@@ -52,11 +60,17 @@ class AgentRuntime:
 
     async def _execute_run(self, run_id: str, goal: str) -> AgentRun:
         try:
+            run = self.db.get_run(run_id)
+            if run is None:
+                raise ValueError(f"Run not found: {run_id}")
             contract = self.db.get_contract(run_id)
             if contract and contract.allowed_tools:
                 allowed_tools = contract.allowed_tools
             else:
                 allowed_tools = self.tools.names()
+            conversation_messages = (
+                self.db.recent_thread_messages(run.thread_id, limit=12) if run.thread_id else []
+            )
             self.db.append_event(run_id, "plan.created", build_plan(goal, allowed_tools, contract))
             memories = self.memory.search(goal, limit=5)
             skills = self.skills.search(goal, limit=5) if self.skills else []
@@ -82,6 +96,7 @@ class AgentRuntime:
                     memories=memories,
                     skills=skills,
                     tools=self.tools.specs(allowed_tools),
+                    conversation_messages=conversation_messages,
                 )
             )
             self.db.append_event(
@@ -114,6 +129,7 @@ class AgentRuntime:
                         skills=skills,
                         tools=self.tools.specs(allowed_tools),
                         tool_results=tool_results,
+                        conversation_messages=conversation_messages,
                     )
                 )
                 final_answer = _clean_final_answer(synthesis_response.message or response.message)
@@ -148,6 +164,7 @@ class AgentRuntime:
                                 skills=skills,
                                 tools=self.tools.specs(allowed_tools),
                                 tool_results=tool_results,
+                                conversation_messages=conversation_messages,
                             )
                         )
                         final_answer = _clean_final_answer(
@@ -176,6 +193,13 @@ class AgentRuntime:
             )
             self.db.append_event(run_id, "eval.completed", eval_result.to_dict())
             run = self.db.update_run(run_id, status="completed", final_answer=final_answer)
+            if run.thread_id:
+                self.db.append_thread_message(
+                    run.thread_id,
+                    role="assistant",
+                    content=final_answer,
+                    run_id=run.id,
+                )
             self.db.append_event(
                 run_id,
                 "run.completed",
@@ -201,8 +225,22 @@ class AgentRuntime:
             )
             self.db.append_event(run_id, "eval.completed", eval_result.to_dict())
             failed = self.db.update_run(run_id, status="failed", error=str(exc))
+            if failed.thread_id:
+                self.db.append_thread_message(
+                    failed.thread_id,
+                    role="assistant",
+                    content=f"Run failed: {exc}",
+                    run_id=failed.id,
+                )
             self.db.append_event(run_id, "run.failed", {"status": "failed", "error": str(exc)})
             return failed
+
+    def _ensure_thread(self, goal: str, thread_id: str | None) -> str:
+        if thread_id is None:
+            return self.db.create_thread(goal).id
+        if self.db.get_thread(thread_id) is None:
+            raise ValueError(f"Thread not found: {thread_id}")
+        return thread_id
 
     def _execute_tool_calls(
         self,

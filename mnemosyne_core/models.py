@@ -34,6 +34,7 @@ class AgentRun:
     status: str
     created_at: str
     updated_at: str
+    thread_id: str | None = None
     final_answer: str | None = None
     error: str | None = None
     contract: TaskContract | None = None
@@ -45,6 +46,7 @@ class AgentRun:
             "status": self.status,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
+            "thread_id": self.thread_id,
             "final_answer": self.final_answer,
             "error": self.error,
         }
@@ -53,6 +55,44 @@ class AgentRun:
         if self.contract is not None:
             data["contract"] = self.contract.to_dict()
         return data
+
+
+@dataclass(frozen=True)
+class ConversationThread:
+    id: str
+    title: str
+    created_at: str
+    updated_at: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "title": self.title,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+        }
+
+
+@dataclass(frozen=True)
+class ThreadMessage:
+    id: str
+    thread_id: str
+    sequence: int
+    role: str
+    content: str
+    run_id: str | None
+    created_at: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "thread_id": self.thread_id,
+            "sequence": self.sequence,
+            "role": self.role,
+            "content": self.content,
+            "run_id": self.run_id,
+            "created_at": self.created_at,
+        }
 
 
 @dataclass(frozen=True)

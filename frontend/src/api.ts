@@ -33,10 +33,33 @@ export type AgentRun = {
   status: RunStatus;
   created_at: string;
   updated_at?: string;
+  thread_id?: string | null;
   final_answer?: string | null;
   error?: string | null;
   eval?: EvalResult;
   contract?: TaskContract;
+};
+
+export type ThreadMessage = {
+  id: string;
+  thread_id: string;
+  sequence: number;
+  role: "user" | "assistant" | "system";
+  content: string;
+  run_id?: string | null;
+  created_at: string;
+};
+
+export type ConversationThread = {
+  id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ConversationThreadDetail = ConversationThread & {
+  messages: ThreadMessage[];
+  runs: AgentRun[];
 };
 
 export type MemoryRecord = {
@@ -138,6 +161,7 @@ export type TerminalJobLog = {
 };
 
 export type CreateRunOptions = {
+  thread_id?: string | null;
   constraints?: string;
   allowed_tools?: string[];
   success_criteria?: string[];
@@ -173,6 +197,21 @@ export function retryRun(runId: string) {
 
 export function cancelRun(runId: string) {
   return request<AgentRun>(`/runs/${runId}/cancel`, { method: "POST" });
+}
+
+export function listThreads() {
+  return request<ConversationThread[]>("/threads");
+}
+
+export function createThread(title: string) {
+  return request<ConversationThread>("/threads", {
+    method: "POST",
+    body: JSON.stringify({ title }),
+  });
+}
+
+export function getThread(threadId: string) {
+  return request<ConversationThreadDetail>(`/threads/${threadId}`);
 }
 
 export function getRun(runId: string) {
