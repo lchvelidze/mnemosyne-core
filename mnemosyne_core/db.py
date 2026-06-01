@@ -17,6 +17,12 @@ from mnemosyne_core.models import (
     TerminalJobLog,
     now_iso,
 )
+from mnemosyne_core.vectors import (
+    VECTOR_VERSION,
+    cosine_similarity,
+    embed_text,
+    vector_text_for_skill,
+)
 
 
 class Database:
@@ -64,6 +70,12 @@ class Database:
                 );
                 CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts
                 USING fts5(memory_id UNINDEXED, text);
+                CREATE TABLE IF NOT EXISTS memory_vectors (
+                    memory_id TEXT PRIMARY KEY REFERENCES memories(id) ON DELETE CASCADE,
+                    embedding TEXT NOT NULL,
+                    embedding_version TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS skills (
                     id TEXT PRIMARY KEY,
                     name TEXT NOT NULL UNIQUE,
@@ -77,6 +89,12 @@ class Database:
                 );
                 CREATE VIRTUAL TABLE IF NOT EXISTS skills_fts
                 USING fts5(skill_id UNINDEXED, name, description, instructions, trigger_terms);
+                CREATE TABLE IF NOT EXISTS skill_vectors (
+                    skill_id TEXT PRIMARY KEY REFERENCES skills(id) ON DELETE CASCADE,
+                    embedding TEXT NOT NULL,
+                    embedding_version TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS run_memories (
                     run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
                     memory_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
@@ -135,6 +153,7 @@ class Database:
                 "evaluator_version",
                 "TEXT NOT NULL DEFAULT 'legacy'",
             )
+            self._backfill_vectors(conn)
 
     def connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.path, check_same_thread=False)
@@ -301,6 +320,7 @@ class Database:
                 "INSERT INTO memories_fts (memory_id, text) VALUES (?, ?)",
                 (record.id, record.text),
             )
+            self._upsert_memory_vector(conn, record.id, record.text)
         return record
 
     def list_memories(self) -> list[MemoryRecord]:
@@ -336,6 +356,7 @@ class Database:
                 "INSERT INTO memories_fts (memory_id, text) VALUES (?, ?)",
                 (memory_id, text),
             )
+            self._upsert_memory_vector(conn, memory_id, text)
         record = self.get_memory(memory_id)
         if record is None:
             raise ValueError(f"Memory not found: {memory_id}")
@@ -344,26 +365,27 @@ class Database:
     def delete_memory(self, memory_id: str) -> bool:
         with self.connect() as conn:
             conn.execute("DELETE FROM memories_fts WHERE memory_id = ?", (memory_id,))
+            conn.execute("DELETE FROM memory_vectors WHERE memory_id = ?", (memory_id,))
             cursor = conn.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
         return cursor.rowcount > 0
 
     def search_memories(self, query: str, limit: int = 5) -> list[MemoryRecord]:
-        fts_query = self._fts_query(query)
-        if not fts_query:
-            return []
+        query_vector = embed_text(query)
         with self.connect() as conn:
-            rows = conn.execute(
+            vector_rows = conn.execute(
                 """
-                SELECT m.*
-                FROM memories_fts f
-                JOIN memories m ON m.id = f.memory_id
-                WHERE memories_fts MATCH ?
-                ORDER BY bm25(memories_fts), m.importance DESC, m.created_at DESC
-                LIMIT ?
+                SELECT m.*, v.embedding
+                FROM memory_vectors v
+                JOIN memories m ON m.id = v.memory_id
+                WHERE v.embedding_version = ?
                 """,
-                (fts_query, limit),
+                (VECTOR_VERSION,),
             ).fetchall()
-        return [self._memory_from_row(row) for row in rows]
+            fts_rows = self._memory_fts_rows(conn, query, limit=max(limit, 25))
+        ranked = self._rank_memory_rows(vector_rows, fts_rows, query_vector)
+        if ranked:
+            return [self._memory_from_row(row) for row in ranked[:limit]]
+        return [self._memory_from_row(row) for row in fts_rows[:limit]]
 
     def add_skill(
         self,
@@ -408,6 +430,7 @@ class Database:
                 ),
             )
             self._insert_skill_fts(conn, skill)
+            self._upsert_skill_vector(conn, skill)
         return skill
 
     def list_skills(self, *, enabled_only: bool = False) -> list[SkillRecord]:
@@ -460,11 +483,13 @@ class Database:
             skill = self._skill_from_row(row)
             conn.execute("DELETE FROM skills_fts WHERE skill_id = ?", (skill_id,))
             self._insert_skill_fts(conn, skill)
+            self._upsert_skill_vector(conn, skill)
         return skill
 
     def delete_skill(self, skill_id: str) -> bool:
         with self.connect() as conn:
             conn.execute("DELETE FROM skills_fts WHERE skill_id = ?", (skill_id,))
+            conn.execute("DELETE FROM skill_vectors WHERE skill_id = ?", (skill_id,))
             cursor = conn.execute("DELETE FROM skills WHERE id = ?", (skill_id,))
         return cursor.rowcount > 0
 
@@ -475,23 +500,74 @@ class Database:
         limit: int = 5,
         enabled_only: bool = True,
     ) -> list[SkillRecord]:
+        query_vector = embed_text(query)
+        with self.connect() as conn:
+            enabled_filter = "AND s.enabled = 1" if enabled_only else ""
+            vector_rows = conn.execute(
+                f"""
+                SELECT s.*, v.embedding
+                FROM skill_vectors v
+                JOIN skills s ON s.id = v.skill_id
+                WHERE v.embedding_version = ? {enabled_filter}
+                """,
+                (VECTOR_VERSION,),
+            ).fetchall()
+            fts_rows = self._skill_fts_rows(
+                conn,
+                query,
+                limit=max(limit, 25),
+                enabled_only=enabled_only,
+            )
+        ranked = self._rank_skill_rows(vector_rows, fts_rows, query_vector)
+        if ranked:
+            return [self._skill_from_row(row) for row in ranked[:limit]]
+        return [self._skill_from_row(row) for row in fts_rows[:limit]]
+
+    def _memory_fts_rows(
+        self,
+        conn: sqlite3.Connection,
+        query: str,
+        *,
+        limit: int,
+    ) -> list[sqlite3.Row]:
+        fts_query = self._fts_query(query)
+        if not fts_query:
+            return []
+        return conn.execute(
+            """
+            SELECT m.*
+            FROM memories_fts f
+            JOIN memories m ON m.id = f.memory_id
+            WHERE memories_fts MATCH ?
+            ORDER BY bm25(memories_fts), m.importance DESC, m.created_at DESC
+            LIMIT ?
+            """,
+            (fts_query, limit),
+        ).fetchall()
+
+    def _skill_fts_rows(
+        self,
+        conn: sqlite3.Connection,
+        query: str,
+        *,
+        limit: int,
+        enabled_only: bool,
+    ) -> list[sqlite3.Row]:
         fts_query = self._fts_query(query)
         if not fts_query:
             return []
         enabled_filter = "AND s.enabled = 1" if enabled_only else ""
-        with self.connect() as conn:
-            rows = conn.execute(
-                f"""
-                SELECT s.*
-                FROM skills_fts f
+        return conn.execute(
+            f"""
+            SELECT s.*
+            FROM skills_fts f
                 JOIN skills s ON s.id = f.skill_id
                 WHERE skills_fts MATCH ? {enabled_filter}
                 ORDER BY bm25(skills_fts), s.updated_at DESC
                 LIMIT ?
-                """,
-                (fts_query, limit),
-            ).fetchall()
-        return [self._skill_from_row(row) for row in rows]
+            """,
+            (fts_query, limit),
+        ).fetchall()
 
     def attach_run_memories(self, run_id: str, memories: list[MemoryRecord]) -> None:
         with self.connect() as conn:
@@ -739,6 +815,64 @@ class Database:
             ).fetchall()
         return [self._terminal_job_log_from_row(row) for row in rows]
 
+    def _rank_memory_rows(
+        self,
+        vector_rows: list[sqlite3.Row],
+        fts_rows: list[sqlite3.Row],
+        query_vector: list[float],
+    ) -> list[sqlite3.Row]:
+        fts_ids = {row["id"] for row in fts_rows}
+        fts_rank = {row["id"]: index for index, row in enumerate(fts_rows)}
+        rows_by_id = {row["id"]: row for row in fts_rows}
+        scored: list[tuple[float, sqlite3.Row]] = []
+        for row in vector_rows:
+            rows_by_id.setdefault(row["id"], row)
+            similarity = cosine_similarity(query_vector, json.loads(row["embedding"]))
+            if similarity < 0.12 and row["id"] not in fts_ids:
+                continue
+            fts_bonus = 0.35 / (1 + fts_rank[row["id"]]) if row["id"] in fts_rank else 0.0
+            score = similarity + fts_bonus + min(float(row["importance"]), 1.0) * 0.03
+            scored.append((score, row))
+        scored.sort(key=lambda item: item[0], reverse=True)
+        seen: set[str] = set()
+        ranked = []
+        for _score, row in scored:
+            seen.add(row["id"])
+            ranked.append(rows_by_id[row["id"]])
+        for row in fts_rows:
+            if row["id"] not in seen:
+                ranked.append(row)
+        return ranked
+
+    def _rank_skill_rows(
+        self,
+        vector_rows: list[sqlite3.Row],
+        fts_rows: list[sqlite3.Row],
+        query_vector: list[float],
+    ) -> list[sqlite3.Row]:
+        fts_ids = {row["id"] for row in fts_rows}
+        fts_rank = {row["id"]: index for index, row in enumerate(fts_rows)}
+        rows_by_id = {row["id"]: row for row in fts_rows}
+        scored: list[tuple[float, sqlite3.Row]] = []
+        for row in vector_rows:
+            rows_by_id.setdefault(row["id"], row)
+            similarity = cosine_similarity(query_vector, json.loads(row["embedding"]))
+            if similarity < 0.12 and row["id"] not in fts_ids:
+                continue
+            fts_bonus = 0.35 / (1 + fts_rank[row["id"]]) if row["id"] in fts_rank else 0.0
+            score = similarity + fts_bonus
+            scored.append((score, row))
+        scored.sort(key=lambda item: item[0], reverse=True)
+        seen: set[str] = set()
+        ranked = []
+        for _score, row in scored:
+            seen.add(row["id"])
+            ranked.append(rows_by_id[row["id"]])
+        for row in fts_rows:
+            if row["id"] not in seen:
+                ranked.append(row)
+        return ranked
+
     @staticmethod
     def _fts_query(query: str) -> str:
         terms = ["".join(ch for ch in part if ch.isalnum()) for part in query.split()]
@@ -856,6 +990,61 @@ class Database:
                 " ".join(skill.trigger_terms),
             ),
         )
+
+    @staticmethod
+    def _upsert_memory_vector(conn: sqlite3.Connection, memory_id: str, text: str) -> None:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO memory_vectors
+            (memory_id, embedding, embedding_version, updated_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (memory_id, json.dumps(embed_text(text)), VECTOR_VERSION, now_iso()),
+        )
+
+    @staticmethod
+    def _upsert_skill_vector(conn: sqlite3.Connection, skill: SkillRecord) -> None:
+        text = vector_text_for_skill(
+            name=skill.name,
+            description=skill.description,
+            instructions=skill.instructions,
+            trigger_terms=skill.trigger_terms,
+        )
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO skill_vectors
+            (skill_id, embedding, embedding_version, updated_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (skill.id, json.dumps(embed_text(text)), VECTOR_VERSION, now_iso()),
+        )
+
+    def _backfill_vectors(self, conn: sqlite3.Connection) -> None:
+        memory_rows = conn.execute(
+            """
+            SELECT m.id, m.text
+            FROM memories m
+            LEFT JOIN memory_vectors v
+              ON v.memory_id = m.id AND v.embedding_version = ?
+            WHERE v.memory_id IS NULL
+            """,
+            (VECTOR_VERSION,),
+        ).fetchall()
+        for row in memory_rows:
+            self._upsert_memory_vector(conn, row["id"], row["text"])
+
+        skill_rows = conn.execute(
+            """
+            SELECT s.*
+            FROM skills s
+            LEFT JOIN skill_vectors v
+              ON v.skill_id = s.id AND v.embedding_version = ?
+            WHERE v.skill_id IS NULL
+            """,
+            (VECTOR_VERSION,),
+        ).fetchall()
+        for row in skill_rows:
+            self._upsert_skill_vector(conn, self._skill_from_row(row))
 
     @staticmethod
     def _eval_from_row(row: sqlite3.Row) -> EvalResult:

@@ -15,7 +15,7 @@ Mnemosyne Core is a local-first agent control plane. The current MVP is built ar
 - The model synthesizes a final Markdown answer.
 - An eval record is created for the run.
 
-The system is intentionally local-first and localhost-bound. It does not have multi-user auth, Kubernetes, Postgres, Redis, vector search, browser automation, or unrestricted shell execution.
+The system is intentionally local-first and localhost-bound. It does not have multi-user auth, Kubernetes, Postgres, Redis, browser automation, or unrestricted shell execution.
 
 ## Architecture
 
@@ -46,8 +46,8 @@ FastAPI Backend
               - runs
               - run contracts
               - events
-              - memories + FTS
-              - skills + FTS
+              - memories + FTS + local vectors
+              - skills + FTS + local vectors
               - run memory links
               - tool calls
               - eval results
@@ -218,7 +218,7 @@ Current limitation: cancellation updates the run state but does not forcibly ter
 2. Enter a memory.
 3. Click **Add Memory**.
 
-Memory is stored in SQLite and indexed with FTS5. Future runs retrieve relevant memory automatically.
+Memory is stored in SQLite and indexed with FTS5 plus local vector embeddings. Future runs retrieve relevant memory automatically.
 
 ### Add A Skill
 
@@ -234,7 +234,7 @@ Memory is stored in SQLite and indexed with FTS5. Future runs retrieve relevant 
 
 Existing skills can be edited or deleted directly from the Skill Manager list. Editing loads the skill into the form; deleting asks for browser confirmation first.
 
-Skills are stored in SQLite and indexed with FTS5. Future runs retrieve relevant skills automatically and send them to the model as instruction context.
+Skills are stored in SQLite and indexed with FTS5 plus local vector embeddings. Future runs retrieve relevant skills automatically and send them to the model as instruction context.
 
 Example skill:
 
@@ -253,9 +253,9 @@ For each run, `AgentRuntime` does this:
 1. Creates or continues a run.
 2. Loads the run contract.
 3. Emits `plan.created`.
-4. Searches memory with SQLite FTS.
+4. Searches memory with local vectors and SQLite FTS fallback.
 5. Emits `memory.retrieved`.
-6. Searches skills with SQLite FTS.
+6. Searches skills with local vectors and SQLite FTS fallback.
 7. Emits `skills.retrieved`.
 8. Calls the model with goal, memory, skills, and allowed tools.
 9. Emits `model.started` and `model.completed`.
@@ -990,7 +990,9 @@ Memory records are local facts or notes. They have:
 - `importance`
 - `created_at`
 
-Memory is stored in SQLite and indexed using FTS5.
+Memory is stored in SQLite and indexed using both FTS5 and local vector embeddings.
+
+Vector retrieval is local and deterministic. Mnemosyne currently uses hashed lexical embeddings stored in SQLite, then blends vector similarity with FTS matches. If vectors are missing or produce no useful match, search falls back to FTS results.
 
 Example use:
 
@@ -1097,8 +1099,10 @@ Tables include:
 - `events`
 - `memories`
 - `memories_fts`
+- `memory_vectors`
 - `skills`
 - `skills_fts`
+- `skill_vectors`
 - `run_memories`
 - `tool_calls`
 - `eval_results`
@@ -1109,7 +1113,7 @@ Do not commit the database.
 
 - No multi-user auth.
 - No role-based permissions.
-- No vector database yet.
+- No external vector database yet; local SQLite vectors are used for MVP retrieval.
 - No graph memory yet.
 - No Redis/Postgres/Kubernetes.
 - Web search is lightweight and may produce sparse results.
@@ -1220,6 +1224,5 @@ For WSL terminal working directories, use WSL paths:
 
 ## Recommended Next Upgrades
 
-- Add vector retrieval while keeping SQLite FTS as fallback.
 - Add export/import for memory and skills.
 - Add a first-run setup screen for `.env` validation.

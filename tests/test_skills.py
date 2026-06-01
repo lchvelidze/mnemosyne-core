@@ -25,6 +25,23 @@ def test_skill_store_creates_normalizes_and_searches_skills(tmp_path: Path) -> N
     assert results[0].id == created.id
 
 
+def test_vector_skill_search_finds_related_terms_without_exact_fts_match(tmp_path: Path) -> None:
+    db = Database(tmp_path / "mnemosyne.db")
+    db.initialize()
+    skills = SkillStore(db)
+
+    created = skills.create(
+        name="OpenClaw Model Run",
+        description="Run OpenClaw model inference.",
+        instructions="Use openclaw infer model run --prompt.",
+        trigger_terms=["openclaw"],
+        tool_names=["run_terminal_command"],
+    )
+    results = skills.search("assistant workflow inference")
+
+    assert results[0].id == created.id
+
+
 def test_tool_registry_can_create_and_list_skills(tmp_path: Path) -> None:
     db = Database(tmp_path / "mnemosyne.db")
     db.initialize()

@@ -1,6 +1,6 @@
 # Mnemosyne Core
 
-Local-first agent harness MVP with a FastAPI backend, SQLite memory, reusable agent skills, safe tools, terminal jobs, LiteLLM model adapter, rubric eval records, and a React/Vite run console.
+Local-first agent harness MVP with a FastAPI backend, SQLite memory with local vector retrieval and FTS fallback, reusable agent skills, safe tools, terminal jobs, LiteLLM model adapter, rubric eval records, and a React/Vite run console.
 
 ## Quick Start
 
@@ -25,7 +25,7 @@ Copy `.env.example` to `.env` for local configuration. Do not commit `.env`; it 
 
 ## Skills
 
-Mnemosyne skills are local reusable instructions for repeatable agent workflows. They are stored in SQLite, searchable with FTS, exposed to the model as relevant context, and manageable through the dashboard Skill Manager or API:
+Mnemosyne skills are local reusable instructions for repeatable agent workflows. They are stored in SQLite, searchable with local vectors plus FTS fallback, exposed to the model as relevant context, and manageable through the dashboard Skill Manager or API:
 
 - `GET /skills`
 - `POST /skills`
