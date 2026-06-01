@@ -143,7 +143,16 @@ async def test_agent_run_records_ordered_events_memory_tool_and_eval(tmp_path: P
         "eval.completed",
         "run.completed",
     ]
-    assert db.get_eval(run.id).passed is True
+    eval_result = db.get_eval(run.id)
+    assert eval_result is not None
+    assert eval_result.passed is True
+    assert eval_result.evaluator_version == "local-rubric-v2"
+    assert {dimension["name"] for dimension in eval_result.rubric} >= {
+        "completion",
+        "tool_use",
+        "memory_use",
+        "grounding",
+    }
 
 
 @pytest.mark.asyncio()

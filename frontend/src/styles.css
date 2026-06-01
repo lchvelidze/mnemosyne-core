@@ -921,6 +921,45 @@ pre {
   grid-column: 1 / -1;
 }
 
+.eval-box > small {
+  grid-column: 1 / -1;
+  color: #66736b;
+  font-weight: 700;
+}
+
+.rubric-list {
+  grid-column: 1 / -1;
+  list-style: none;
+  padding: 0;
+  margin: 6px 0 0;
+  display: grid;
+  gap: 8px;
+}
+
+.rubric-list li {
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid #d8e1da;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.rubric-list div {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.rubric-list strong,
+.rubric-list small {
+  overflow-wrap: anywhere;
+}
+
+.rubric-list meter {
+  width: 100%;
+}
+
 .muted {
   color: #66736b;
 }

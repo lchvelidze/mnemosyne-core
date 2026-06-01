@@ -263,9 +263,31 @@ For each run, `AgentRuntime` does this:
 11. Emits tool events such as `tool.started`, `tool.completed`, `tool.failed`, or `tool.blocked`.
 12. Calls the model again to synthesize from tool results.
 13. Emits synthesis events.
-14. Scores the answer with a simple eval.
+14. Scores the answer with a local rubric eval.
 15. Emits `eval.completed`.
 16. Marks run completed or failed.
+
+## Eval Rubrics
+
+Each completed or failed run gets a persisted eval record. The top-level fields stay simple for history views:
+
+- `score`: weighted score from `0` to `1`.
+- `passed`: true when the run clears the local pass threshold.
+- `notes`: short summary of what needs attention.
+- `evaluator_version`: rubric implementation version.
+- `rubric`: dimension-level scores and notes.
+
+Current local rubric dimensions:
+
+- Task Completion
+- Success Criteria
+- Tool Use
+- Memory Use
+- Grounding
+- Clarity
+- Safety
+
+The dashboard Eval panel shows the total score plus each dimension with its weight and notes. The current evaluator is deterministic and local; it does not call the model, so evals continue to work when model configuration is missing.
 
 ## Timeline Events
 
@@ -1087,12 +1109,9 @@ Do not commit the database.
 
 - No multi-user auth.
 - No role-based permissions.
-- No background job queue.
-- Cancellation does not always kill already-started subprocesses.
 - No vector database yet.
 - No graph memory yet.
 - No Redis/Postgres/Kubernetes.
-- No direct manual tool execution endpoint.
 - Web search is lightweight and may produce sparse results.
 - Skills are instruction records, not separate code packages.
 - Terminal execution is intentionally constrained by roots, shell allowlists, timeouts, and blocked command patterns.
@@ -1201,7 +1220,6 @@ For WSL terminal working directories, use WSL paths:
 
 ## Recommended Next Upgrades
 
-- Add richer eval rubrics.
 - Add vector retrieval while keeping SQLite FTS as fallback.
 - Add export/import for memory and skills.
 - Add a first-run setup screen for `.env` validation.

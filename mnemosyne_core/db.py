@@ -98,7 +98,9 @@ class Database:
                     score REAL NOT NULL,
                     notes TEXT NOT NULL,
                     passed INTEGER NOT NULL,
-                    created_at TEXT NOT NULL
+                    created_at TEXT NOT NULL,
+                    rubric TEXT NOT NULL DEFAULT '[]',
+                    evaluator_version TEXT NOT NULL DEFAULT 'legacy'
                 );
                 CREATE TABLE IF NOT EXISTS terminal_jobs (
                     id TEXT PRIMARY KEY,
@@ -125,6 +127,13 @@ class Database:
                     UNIQUE(job_id, sequence)
                 );
                 """
+            )
+            self._ensure_column(conn, "eval_results", "rubric", "TEXT NOT NULL DEFAULT '[]'")
+            self._ensure_column(
+                conn,
+                "eval_results",
+                "evaluator_version",
+                "TEXT NOT NULL DEFAULT 'legacy'",
             )
 
     def connect(self) -> sqlite3.Connection:
@@ -536,21 +545,41 @@ class Database:
                 ),
             )
 
-    def add_eval(self, run_id: str, *, score: float, notes: str, passed: bool) -> EvalResult:
+    def add_eval(
+        self,
+        run_id: str,
+        *,
+        score: float,
+        notes: str,
+        passed: bool,
+        rubric: list[dict[str, Any]] | None = None,
+        evaluator_version: str = "legacy",
+    ) -> EvalResult:
         result = EvalResult(
             run_id=run_id,
             score=score,
             notes=notes,
             passed=passed,
             created_at=now_iso(),
+            rubric=rubric or [],
+            evaluator_version=evaluator_version,
         )
         with self.connect() as conn:
             conn.execute(
                 """
-                INSERT OR REPLACE INTO eval_results (run_id, score, notes, passed, created_at)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT OR REPLACE INTO eval_results
+                (run_id, score, notes, passed, created_at, rubric, evaluator_version)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (result.run_id, result.score, result.notes, int(result.passed), result.created_at),
+                (
+                    result.run_id,
+                    result.score,
+                    result.notes,
+                    int(result.passed),
+                    result.created_at,
+                    json.dumps(result.rubric),
+                    result.evaluator_version,
+                ),
             )
         return result
 
@@ -836,7 +865,20 @@ class Database:
             notes=row["notes"],
             passed=bool(row["passed"]),
             created_at=row["created_at"],
+            rubric=json.loads(row["rubric"]),
+            evaluator_version=row["evaluator_version"],
         )
+
+    @staticmethod
+    def _ensure_column(
+        conn: sqlite3.Connection,
+        table: str,
+        column: str,
+        definition: str,
+    ) -> None:
+        columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in columns:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
 def default_contract(goal: str, allowed_tools: list[str]) -> TaskContract:

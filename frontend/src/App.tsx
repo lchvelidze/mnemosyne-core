@@ -983,6 +983,27 @@ export default function App() {
                     </span>
                     <strong>{evalPercent}%</strong>
                     <p>{selectedRun.eval.notes}</p>
+                    {selectedRun.eval.evaluator_version ? (
+                      <small>{selectedRun.eval.evaluator_version}</small>
+                    ) : null}
+                    {selectedRun.eval.rubric?.length ? (
+                      <ul className="rubric-list">
+                        {selectedRun.eval.rubric.map((dimension) => (
+                          <li key={dimension.name}>
+                            <div>
+                              <strong>{dimension.label}</strong>
+                              <span className={dimension.passed ? "pass" : "fail"}>
+                                {Math.round(dimension.score * 100)}%
+                              </span>
+                            </div>
+                            <meter max="1" min="0" value={dimension.score} />
+                            <small>
+                              Weight {Math.round(dimension.weight * 100)}% · {dimension.notes}
+                            </small>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : null}
                   </div>
                 ) : (
                   <p className="muted">No eval result yet.</p>

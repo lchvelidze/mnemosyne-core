@@ -69,6 +69,8 @@ def test_post_run_creates_completed_run_and_history_survives_reopen(tmp_path: Pa
     run = client.get(f"/runs/{run_id}").json()
     assert run["status"] == "completed"
     assert run["final_answer"] == "Answer for research memory"
+    assert run["eval"]["evaluator_version"] == "local-rubric-v2"
+    assert any(dimension["name"] == "success_criteria" for dimension in run["eval"]["rubric"])
     assert run["contract"]["constraints"] == "Use only local memory and safe tools."
     assert run["contract"]["allowed_tools"] == ["calculator"]
     assert client.get("/runs").json()[0]["id"] == run_id

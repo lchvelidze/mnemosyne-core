@@ -261,7 +261,22 @@ describe("Run Console", () => {
             created_at: "2026-05-08T12:00:00Z",
             final_answer:
               "## Battery Safety\n\n- [LFP batteries](https://example.com/lfp) are a safety-oriented choice.",
-            eval: { score: 0.86, passed: true, notes: "Grounded and inspectable." },
+            eval: {
+              score: 0.86,
+              passed: true,
+              notes: "Grounded and inspectable.",
+              evaluator_version: "local-rubric-v2",
+              rubric: [
+                {
+                  name: "grounding",
+                  label: "Grounding",
+                  score: 0.9,
+                  weight: 0.15,
+                  passed: true,
+                  notes: "Source links are present.",
+                },
+              ],
+            },
             contract: {
               goal: "research battery safety",
               constraints: "Use only safe tools.",
@@ -363,6 +378,7 @@ describe("Run Console", () => {
     );
     expect((await screen.findAllByText(/Solar battery research prefers LFP chemistry/i))[0]).toBeInTheDocument();
     expect(await screen.findByText(/Grounded and inspectable/i)).toBeInTheDocument();
+    expect(await screen.findByText("Grounding")).toBeInTheDocument();
   });
 
   it("can reopen a previous run from history", async () => {

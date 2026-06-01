@@ -158,12 +158,22 @@ class AgentRuntime:
                     "model.synthesis_completed",
                     {"message": final_answer},
                 )
-            score, notes, passed = score_answer(
+            eval_score = score_answer(
                 final_answer,
+                goal=goal,
+                success_criteria=contract.success_criteria if contract else [],
                 used_memory=bool(memories),
                 tool_count=completed_tools,
+                tool_results=tool_results,
             )
-            eval_result = self.db.add_eval(run_id, score=score, notes=notes, passed=passed)
+            eval_result = self.db.add_eval(
+                run_id,
+                score=eval_score.score,
+                notes=eval_score.notes,
+                passed=eval_score.passed,
+                rubric=eval_score.rubric,
+                evaluator_version=eval_score.evaluator_version,
+            )
             self.db.append_event(run_id, "eval.completed", eval_result.to_dict())
             run = self.db.update_run(run_id, status="completed", final_answer=final_answer)
             self.db.append_event(
@@ -173,13 +183,22 @@ class AgentRuntime:
             )
             return run
         except Exception as exc:
-            score, notes, passed = score_answer(
+            eval_score = score_answer(
                 None,
+                goal=goal,
+                success_criteria=[],
                 used_memory=False,
                 tool_count=0,
                 error=str(exc),
             )
-            eval_result = self.db.add_eval(run_id, score=score, notes=notes, passed=passed)
+            eval_result = self.db.add_eval(
+                run_id,
+                score=eval_score.score,
+                notes=eval_score.notes,
+                passed=eval_score.passed,
+                rubric=eval_score.rubric,
+                evaluator_version=eval_score.evaluator_version,
+            )
             self.db.append_event(run_id, "eval.completed", eval_result.to_dict())
             failed = self.db.update_run(run_id, status="failed", error=str(exc))
             self.db.append_event(run_id, "run.failed", {"status": "failed", "error": str(exc)})

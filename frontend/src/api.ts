@@ -16,6 +16,15 @@ export type EvalResult = {
   notes: string;
   passed: boolean;
   created_at: string;
+  rubric?: Array<{
+    name: string;
+    label: string;
+    score: number;
+    weight: number;
+    passed: boolean;
+    notes: string;
+  }>;
+  evaluator_version?: string;
 };
 
 export type AgentRun = {

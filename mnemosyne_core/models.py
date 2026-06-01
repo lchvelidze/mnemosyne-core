@@ -211,6 +211,8 @@ class EvalResult:
     notes: str
     passed: bool
     created_at: str
+    rubric: list[dict[str, Any]]
+    evaluator_version: str
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -219,4 +221,6 @@ class EvalResult:
             "notes": self.notes,
             "passed": self.passed,
             "created_at": self.created_at,
+            "rubric": self.rubric,
+            "evaluator_version": self.evaluator_version,
         }
