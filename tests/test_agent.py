@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -110,6 +111,14 @@ class FailedToolSynthesisModelClient:
             message="",
             tool_calls=[ToolCallRequest(name="slow_tool", arguments={"command": "run"})],
         )
+
+
+class HangingModelClient:
+    configured = True
+
+    async def complete(self, request: ModelRequest) -> ModelResponse:
+        await asyncio.sleep(30)
+        return ModelResponse(message="Too late.")
 
 
 @pytest.mark.asyncio()
@@ -270,6 +279,32 @@ async def test_agent_synthesizes_answer_after_tool_failure(tmp_path: Path) -> No
         "The command did not finish because the terminal tool timed out. "
         "Retry with a larger timeout."
     )
+
+
+@pytest.mark.asyncio()
+async def test_agent_fails_run_when_model_call_times_out(tmp_path: Path) -> None:
+    db = Database(tmp_path / "mnemosyne.db")
+    db.initialize()
+    memory = MemoryStore(db)
+    registry = ToolRegistry.safe_defaults(
+        Settings(database_path=str(tmp_path / "mnemosyne.db"), allowed_file_roots=[str(tmp_path)])
+    )
+    runtime = AgentRuntime(
+        db,
+        memory,
+        registry,
+        HangingModelClient(),
+        model_timeout_seconds=0.01,
+    )
+
+    run = await runtime.run_goal("wait forever")
+
+    event_types = [event.event_type for event in db.list_events(run.id)]
+    assert run.status == "failed"
+    assert run.error == "Model call timed out after 0.01s"
+    assert "model.started" in event_types
+    assert "model.completed" not in event_types
+    assert event_types[-1] == "run.failed"
 
 
 @pytest.mark.asyncio()

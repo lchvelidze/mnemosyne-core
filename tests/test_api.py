@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 from time import sleep
 
@@ -31,7 +32,20 @@ class StubModelClient:
         )
 
 
-def build_client(tmp_path: Path) -> TestClient:
+class HangingModelClient:
+    configured = True
+
+    async def complete(self, request: ModelRequest) -> ModelResponse:
+        await asyncio.sleep(30)
+        return ModelResponse(message="Too late.")
+
+
+def build_client(
+    tmp_path: Path,
+    *,
+    model_client: object | None = None,
+    run_inline: bool = True,
+) -> TestClient:
     db = Database(tmp_path / "mnemosyne.db")
     db.initialize()
     memory = MemoryStore(db)
@@ -53,8 +67,8 @@ def build_client(tmp_path: Path) -> TestClient:
         ),
         db,
     )
-    runtime = AgentRuntime(db, memory, registry, StubModelClient(), skills, jobs)
-    return TestClient(create_app(runtime, run_inline=True))
+    runtime = AgentRuntime(db, memory, registry, model_client or StubModelClient(), skills, jobs)
+    return TestClient(create_app(runtime, run_inline=run_inline))
 
 
 def test_post_run_creates_completed_run_and_history_survives_reopen(tmp_path: Path) -> None:
@@ -366,6 +380,20 @@ def test_retry_and_cancel_run_controls(tmp_path: Path) -> None:
     events = client.get(f"/runs/{retry['id']}/events.json").json()
     event_types = [event["event_type"] for event in events]
     assert "run.cancelled" in event_types
+
+
+def test_cancel_run_stops_background_task(tmp_path: Path) -> None:
+    client = build_client(tmp_path, model_client=HangingModelClient(), run_inline=False)
+
+    created = client.post("/runs", json={"goal": "wait on model"}).json()
+    cancelled = client.post(f"/runs/{created['id']}/cancel").json()
+    sleep(0.1)
+    run = client.get(f"/runs/{created['id']}").json()
+
+    assert created["status"] == "running"
+    assert cancelled["status"] == "cancelled"
+    assert run["status"] == "cancelled"
+    assert created["id"] not in client.app.state.run_tasks
 
 
 def test_memory_endpoint_returns_records_used_by_run(tmp_path: Path) -> None:

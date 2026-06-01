@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     http_timeout_seconds: float = 5.0
     http_max_bytes: int = 1_000_000
     litellm_model: str | None = None
+    model_timeout_seconds: float = 120.0
     terminal_enabled: bool = False
     terminal_shells: list[str] = Field(default_factory=lambda: ["powershell"])
     terminal_timeout_seconds: float = 300.0

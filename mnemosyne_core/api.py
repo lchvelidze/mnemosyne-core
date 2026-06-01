@@ -93,6 +93,7 @@ def create_app(runtime: AgentRuntime, *, run_inline: bool = False) -> FastAPI:
     app = FastAPI(title="Mnemosyne Core", version="0.1.0")
     app.state.runtime = runtime
     app.state.run_inline = run_inline
+    app.state.run_tasks = {}
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
@@ -124,7 +125,11 @@ def create_app(runtime: AgentRuntime, *, run_inline: bool = False) -> FastAPI:
                     "contract": contract.to_dict(),
                 },
             )
-            asyncio.create_task(_continue_existing_run(runtime, run.id, payload.goal))
+            _track_run_task(
+                app,
+                run.id,
+                asyncio.create_task(_continue_existing_run(runtime, run.id, payload.goal)),
+            )
         return run.to_dict(runtime.db.get_eval(run.id))
 
     @app.post("/threads", status_code=201)
@@ -181,7 +186,11 @@ def create_app(runtime: AgentRuntime, *, run_inline: bool = False) -> FastAPI:
                     "retry_of": run_id,
                 },
             )
-            asyncio.create_task(_continue_existing_run(runtime, run.id, run.goal))
+            _track_run_task(
+                app,
+                run.id,
+                asyncio.create_task(_continue_existing_run(runtime, run.id, run.goal)),
+            )
         return run.to_dict(runtime.db.get_eval(run.id))
 
     @app.post("/runs/{run_id}/cancel")
@@ -189,6 +198,9 @@ def create_app(runtime: AgentRuntime, *, run_inline: bool = False) -> FastAPI:
         run = runtime.db.get_run(run_id)
         if run is None:
             raise HTTPException(status_code=404, detail="Run not found")
+        task = app.state.run_tasks.pop(run_id, None)
+        if task is not None and not task.done():
+            task.cancel()
         cancelled = runtime.db.update_run(run_id, status="cancelled", error="Cancelled by user")
         if cancelled.thread_id:
             runtime.db.append_thread_message(
@@ -463,7 +475,23 @@ def _resolve_thread_id(runtime: AgentRuntime, goal: str, thread_id: str | None) 
 
 
 async def _continue_existing_run(runtime: AgentRuntime, run_id: str, goal: str) -> None:
-    await runtime.continue_run(run_id, goal)
+    try:
+        await runtime.continue_run(run_id, goal)
+    except asyncio.CancelledError:
+        run = runtime.db.get_run(run_id)
+        if run and run.status not in {"completed", "failed", "cancelled"}:
+            runtime.db.update_run(run_id, status="cancelled", error="Cancelled by user")
+            runtime.db.append_event(run_id, "run.cancelled", {"status": "cancelled"})
+        raise
+
+
+def _track_run_task(app: FastAPI, run_id: str, task: asyncio.Task) -> None:
+    app.state.run_tasks[run_id] = task
+
+    def forget_task(_task: asyncio.Task) -> None:
+        app.state.run_tasks.pop(run_id, None)
+
+    task.add_done_callback(forget_task)
 
 
 def _contract_from_payload(runtime: AgentRuntime, payload: CreateRunRequest) -> TaskContract:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import re
 from time import perf_counter
 
@@ -7,7 +8,7 @@ from mnemosyne_core.db import Database, default_contract
 from mnemosyne_core.evals import score_answer
 from mnemosyne_core.jobs import TerminalJobManager
 from mnemosyne_core.memory import MemoryStore
-from mnemosyne_core.model_client import ModelClient, ModelRequest
+from mnemosyne_core.model_client import ModelClient, ModelRequest, ModelResponse
 from mnemosyne_core.models import AgentRun, TaskContract
 from mnemosyne_core.skills import SkillStore
 from mnemosyne_core.tools import ToolExecutionError, ToolRegistry
@@ -22,6 +23,7 @@ class AgentRuntime:
         model_client: ModelClient,
         skills: SkillStore | None = None,
         jobs: TerminalJobManager | None = None,
+        model_timeout_seconds: float = 120.0,
     ) -> None:
         self.db = db
         self.memory = memory
@@ -29,6 +31,7 @@ class AgentRuntime:
         self.model_client = model_client
         self.skills = skills
         self.jobs = jobs
+        self.model_timeout_seconds = model_timeout_seconds
 
     async def run_goal(
         self,
@@ -90,14 +93,14 @@ class AgentRuntime:
                 "model.started",
                 {"model_configured": self.model_client.configured},
             )
-            response = await self.model_client.complete(
+            response = await self._complete_model(
                 ModelRequest(
                     goal=goal,
                     memories=memories,
                     skills=skills,
                     tools=self.tools.specs(allowed_tools),
                     conversation_messages=conversation_messages,
-                )
+                ),
             )
             self.db.append_event(
                 run_id,
@@ -122,7 +125,7 @@ class AgentRuntime:
                     "model.synthesis_started",
                     {"tool_result_count": len(tool_results)},
                 )
-                synthesis_response = await self.model_client.complete(
+                synthesis_response = await self._complete_model(
                     ModelRequest(
                         goal=goal,
                         memories=memories,
@@ -130,7 +133,7 @@ class AgentRuntime:
                         tools=self.tools.specs(allowed_tools),
                         tool_results=tool_results,
                         conversation_messages=conversation_messages,
-                    )
+                    ),
                 )
                 final_answer = _clean_final_answer(synthesis_response.message or response.message)
                 if synthesis_response.tool_calls:
@@ -157,7 +160,7 @@ class AgentRuntime:
                             "model.synthesis_retry_started",
                             {"tool_result_count": len(tool_results)},
                         )
-                        final_response = await self.model_client.complete(
+                        final_response = await self._complete_model(
                             ModelRequest(
                                 goal=goal,
                                 memories=memories,
@@ -165,7 +168,7 @@ class AgentRuntime:
                                 tools=self.tools.specs(allowed_tools),
                                 tool_results=tool_results,
                                 conversation_messages=conversation_messages,
-                            )
+                            ),
                         )
                         final_answer = _clean_final_answer(
                             final_response.message or final_answer
@@ -234,6 +237,17 @@ class AgentRuntime:
                 )
             self.db.append_event(run_id, "run.failed", {"status": "failed", "error": str(exc)})
             return failed
+
+    async def _complete_model(self, request: ModelRequest) -> ModelResponse:
+        try:
+            return await asyncio.wait_for(
+                self.model_client.complete(request),
+                timeout=self.model_timeout_seconds,
+            )
+        except TimeoutError as exc:
+            raise TimeoutError(
+                f"Model call timed out after {self.model_timeout_seconds:g}s"
+            ) from exc
 
     def _ensure_thread(self, goal: str, thread_id: str | None) -> str:
         if thread_id is None:

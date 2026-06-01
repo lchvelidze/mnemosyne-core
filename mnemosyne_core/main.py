@@ -20,7 +20,15 @@ def build_runtime() -> AgentRuntime:
     registry = ToolRegistry.safe_defaults(settings, skills)
     jobs = TerminalJobManager(settings, db)
     model_client = LiteLLMModelClient(settings)
-    return AgentRuntime(db, memory, registry, model_client, skills, jobs)
+    return AgentRuntime(
+        db,
+        memory,
+        registry,
+        model_client,
+        skills,
+        jobs,
+        model_timeout_seconds=settings.model_timeout_seconds,
+    )
 
 
 app = create_app(build_runtime())

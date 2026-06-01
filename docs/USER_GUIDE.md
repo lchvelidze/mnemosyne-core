@@ -76,6 +76,7 @@ Current template:
 ```dotenv
 MNEMOSYNE_LITELLM_MODEL=gpt-5.5-2026-04-23
 OPENAI_API_KEY=
+MNEMOSYNE_MODEL_TIMEOUT_SECONDS=120
 
 MNEMOSYNE_ALLOWED_FILE_ROOTS=["C:/path/to/mnemosyne-core","F:/"]
 
@@ -98,6 +99,7 @@ Important settings:
 
 - `MNEMOSYNE_LITELLM_MODEL`: model name sent to LiteLLM.
 - `OPENAI_API_KEY`: provider credential. Keep only in `.env` or your OS environment.
+- `MNEMOSYNE_MODEL_TIMEOUT_SECONDS`: maximum time to wait for each model call.
 - `MNEMOSYNE_ALLOWED_FILE_ROOTS`: Windows paths where file tools and elevated logs may read/write.
 - `MNEMOSYNE_TERMINAL_ENABLED`: enables the terminal tool.
 - `MNEMOSYNE_TERMINAL_SHELLS`: allowed terminal shells, currently `powershell` and `wsl`.
